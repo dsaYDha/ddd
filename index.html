@@ -15,6 +15,8 @@ button{font:inherit;color:inherit}
 #hud .stat b{font-size:15px;font-variant-numeric:tabular-nums}
 #hud .lbl{color:var(--muted);font-size:11px}
 #hud .sp{flex:1}
+#hud{overflow:hidden}
+@media (max-width:1250px){#hud .lbl,.hbtn kbd{display:none}#hud .stat{padding:0 6px}}
 .hbtn{border:1px solid var(--line);background:#fff;border-radius:6px;padding:4px 9px;cursor:pointer;font-size:12px;line-height:18px;white-space:nowrap}
 .hbtn:hover{background:#f1efe8}
 .hbtn.on{background:var(--ink);color:#fff;border-color:var(--ink)}
@@ -89,7 +91,7 @@ button{font:inherit;color:inherit}
 <div id="modeTip"></div>
 <div id="legend">
   <div><span class="dotb" style="background:#3fae63"></span>보급 정상 &nbsp;<span class="dotb" style="background:#e3b52a"></span>보급 부족 &nbsp;<span class="dotb" style="background:#d23f3f"></span>보급 차단</div>
-  <div style="color:#6b7280">아군 보급망 기준 · 붉은 테두리 = 포위됨</div>
+  <div style="color:#6b7280"><span id="legendSide">아군 보급망 기준</span> · 붉은 테두리 = 포위됨 · ! = 보급 차단</div>
 </div>
 
 <div class="screen" id="startScreen">
@@ -129,7 +131,7 @@ button{font:inherit;color:inherit}
   <div class="card">
     <h1 style="font-size:22px">핵심 규칙</h1>
     <div style="font-size:13px;line-height:1.65;margin-top:8px">
-      <p>• <b>보급</b>: 수도·보급창이 보급원이며, 도시는 연결된 보급을 재송출합니다. 보급은 <b>철도</b>로는 거의 손실 없이 멀리, <b>도로</b>로는 일정 거리까지만 전달됩니다. 거점에서 멀어질수록 약해집니다.</p>
+      <p>• <b>보급</b>: 수도가 보급원이며, 보급망에 연결된 보급창은 완전히, 도시는 부분적으로 재송출합니다(끊긴 보급창은 비축분으로 잠시 버팀). 보급은 <b>철도</b>로는 거의 손실 없이 멀리, <b>도로</b>로는 일정 거리까지만 전달됩니다. 거점에서 멀어질수록 약해집니다.</p>
       <p>• <b>보급 부족</b>: 이동·공격 감소, 조직력 회복 중단. <b>보급 차단</b>: 조직력 지속 감소, 시간이 지나면 항복. <b>포위</b>(적 영향권에 완전히 둘러싸임): 조직력 급감, 곧 항복.</p>
       <p>• <b>철도</b>: R키로 건설(자원·시간 소모). 연결된 아군 거점 사이를 도로의 7배 속도로 이동합니다. 선로당 동시 수송량 제한이 있습니다. 적이 선로를 점거하면 끊기고, 빼앗은 철도는 궤간 전환 후 사용 가능합니다.</p>
       <p>• <b>점령</b>: 수비대를 격파한 뒤 적 없이 거점에 머무르면 점령됩니다. 요새는 방어 보너스와 긴 점령 시간을 가집니다. 점령 직후 거점은 <b>혼란 상태</b>로 보급이 약합니다.</p>
@@ -227,6 +229,9 @@ const CONFIG = {
   STR_ATTRITION_CUT: 0.35,     // 보급 차단 시 병력 손실/초
   SURRENDER_TIME_CUT: 75,      // 보급 차단 상태로 이 시간 이상 & 조직력<20 → 항복
   SURRENDER_TIME_ENCIRCLED: 22,// 포위 상태로 이 시간 버티면 항복
+  ENC_CONFIRM_TIME: 4,         // 포위 판정 후 이 시간이 지나야 조직력 붕괴 시 항복 (오판 방지)
+  ENC_ZOC_MULT: 0.3,           // 포위된 부대의 영향력 배율 (포위망은 실제로 격파해야 풀림)
+  DEPOT_STOCK_TIME: 45,        // 수도 보급망과 끊긴 보급창이 비축분으로 버티는 시간
   REINFORCE_RATE: 3,           // 보급 중 병력 보충/초
   REINFORCE_COST: 0.3,         // 병력 1당 자원
 
@@ -241,8 +246,8 @@ const CONFIG = {
 
   // AI (치트 없음: 의사결정 주기/공격 타이밍/철도 활용만 다름)
   AI: {
-    easy:   { think: 3.0, attackRatio: 2.0,  railBuild: 1, railUse: 0.3,  encircle: 0.1,  crisis: 0.4, ops: 1, firstAttack: 180, defendRatio: 0.6, opMax: 12 },
-    normal: { think: 1.6, attackRatio: 1.45, railBuild: 2, railUse: 0.85, encircle: 0.55, crisis: 0.85, ops: 1, firstAttack: 80, defendRatio: 0.9, opMax: 30 },
+    easy:   { think: 2.0, attackRatio: 2.0,  railBuild: 1, railUse: 0.3,  encircle: 0.1,  crisis: 0.4, ops: 1, firstAttack: 180, defendRatio: 0.6, opMax: 12 },
+    normal: { think: 1.5, attackRatio: 1.45, railBuild: 2, railUse: 0.85, encircle: 0.55, crisis: 0.85, ops: 1, firstAttack: 80, defendRatio: 0.9, opMax: 30 },
     hard:   { think: 1.0, attackRatio: 1.2,  railBuild: 3, railUse: 1.0,  encircle: 1.0,  crisis: 1.0,  ops: 2, firstAttack: 40, defendRatio: 1.0, opMax: 45 },
   },
 
@@ -504,7 +509,11 @@ function generateMap(seed) {
   for (const e of edges) {
     if (find(e.i) === find(e.j)) continue;
     if (crosses(e.i, e.j) && e.d < D * 2.2) { /* 교차하면 다음 후보 */ }
-    else { uf[find(e.i)] = find(e.j); addRoad(e.i, e.j); }
+    else {
+      uf[find(e.i)] = find(e.j); addRoad(e.i, e.j);
+      const mi = N[e.i].mirror, mj = N[e.j].mirror;
+      if (!has.has(key(mi, mj)) && !crosses(mi, mj)) { uf[find(mi)] = find(mj); addRoad(mi, mj); }
+    }
   }
   for (const e of edges) { if (find(e.i) !== find(e.j)) { uf[find(e.i)] = find(e.j); addRoad(e.i, e.j); } }
   for (const e of edges) {
@@ -595,7 +604,7 @@ function newGame(diff, seed) {
     supplyTimer: 0, supplySide: 1, railTimer: 0,
     stations: [null, [], []],
     ai: {}, territoryVer: 1, railVer: 1,
-    fx: [], shells: [], pendingSurr: { 1: 0, 2: 0 }, surrFlushT: 0, encAlertT: -99, lastCombatSound: 0,
+    fx: [], shells: [], pendingSurr: { 1: 0, 2: 0 }, surrFlushT: 0, encAlertT: { 1: -99, 2: -99 }, lastCombatSound: 0,
   };
   // 시작 부대
   for (const side of [1, 2]) {
@@ -612,9 +621,9 @@ function newGame(diff, seed) {
   refreshStations();
   updateInfluence();
   for (const s of [1, 2]) { nodeNetwork(s); supplyField(s); }
-  G.encAlertT = 1e9;
+  G.encAlertT = { 1: 1e9, 2: 1e9 };
   for (const s of [1, 2]) refreshUnitSupply(s);
-  G.encAlertT = -99;
+  G.encAlertT = { 1: -99, 2: -99 };
   G.ai[2] = new AI(2, diff);
   return G;
 }
@@ -671,6 +680,7 @@ function queryUnits(x, y, r, out) {
 const FIELD_CACHE = new Map();
 let MOVE_COST = null;
 function initMoveCost() {
+  if (G) G.fieldBudget = 6;
   MOVE_COST = new Float32Array(NC);
   for (let c = 0; c < NC; c++) MOVE_COST[c] = G.M.road[c] ? 1 / CONFIG.ROAD_SPEED_MULT : 1 / CONFIG.TERRAIN[G.M.terrain[c]].speed;
   FIELD_CACHE.clear();
@@ -678,10 +688,12 @@ function initMoveCost() {
 function getField(tc) {
   let f = FIELD_CACHE.get(tc);
   if (f) { f.used = G.tick; return f; }
-  if (FIELD_CACHE.size >= 140) {
+  if (G.fieldBudget <= 0) return null;          // 한 tick에 새 흐름장 계산 수 제한 (대규모 명령 시 끊김 방지)
+  G.fieldBudget--;
+  if (FIELD_CACHE.size >= 420) {
     let oldK = -1, oldU = Infinity;
     for (const [k, v] of FIELD_CACHE) if (v.used < oldU) { oldU = v.used; oldK = k; }
-    FIELD_CACHE.delete(oldK);
+    if (oldU < G.tick) FIELD_CACHE.delete(oldK);
   }
   const d = new Float64Array(NC).fill(Infinity), next = new Int16Array(NC).fill(-1);
   const H = HEAP; H.clear(); d[tc] = 0; next[tc] = tc; H.push(0, tc);
@@ -699,16 +711,22 @@ function getField(tc) {
   return f;
 }
 let STEER_X = 0, STEER_Y = 0;
-function steer(u, tx, ty) {
-  const uc = cellOf(u.x, u.y), tc = cellOf(tx, ty);
-  if (uc === tc || dist2(u.x, u.y, tx, ty) < CELL * CELL * 2.6) { STEER_X = tx; STEER_Y = ty; return; }
-  const f = getField(tc); let c = uc;
+function steer(u, tx, ty, fc) {
+  const uc = cellOf(u.x, u.y);
+  const d2 = dist2(u.x, u.y, tx, ty);
+  if (d2 < CELL * CELL * 2.6) { STEER_X = tx; STEER_Y = ty; return; }
+  // 그룹 명령은 그룹 중심 셀의 흐름장을 공유하고, 마지막 몇 셀만 각자 슬롯으로 직진
+  const tc = fc >= 0 && d2 > CELL * CELL * 16 ? fc : cellOf(tx, ty);
+  if (uc === tc) { STEER_X = tx; STEER_Y = ty; return; }
+  const f = getField(tc);
+  if (!f) { STEER_X = tx; STEER_Y = ty; return; }
+  let c = uc;
   for (let k = 0; k < 3; k++) { const n = f.next[c]; if (n < 0 || n === c) break; c = n; if (c === tc) { STEER_X = tx; STEER_Y = ty; return; } }
   STEER_X = cellX(c); STEER_Y = cellY(c);
 }
 function terrainSpeedAt(x, y) { const c = cellOf(x, y); return G.M.road[c] ? CONFIG.ROAD_SPEED_MULT : CONFIG.TERRAIN[G.M.terrain[c]].speed; }
 function unitSpeed(u) {
-  let s = u.T.speed * terrainSpeedAt(u.x, u.y);
+  let s = (u.speedCap ? Math.min(u.T.speed, u.speedCap) : u.T.speed) * terrainSpeedAt(u.x, u.y);
   if (u.sup === SUP_LOW) s *= CONFIG.LOW_SPEED_MULT; else if (u.sup === SUP_CUT) s *= CONFIG.CUT_SPEED_MULT;
   if (u.mode === 'routed') s *= 1.1;
   return s;
@@ -756,14 +774,23 @@ function nearestStations(s, x, y, max) {
   return out;
 }
 /* 도보 vs 열차 비교 후 명령 목록 생성 */
-function planRoute(u, sx, sy, tx, ty, allowRail) {
-  const walk = [{ k: 'walk', x: tx, y: ty }];
-  if (!allowRail) return walk;
+function railOrders(u, sx, sy, tx, ty, a, b) {
+  const out = [];
+  if (dist(sx, sy, a.x, a.y) > CONFIG.CAPTURE_RADIUS * 0.7) out.push({ k: 'walk', x: a.x, y: a.y, station: a.id });
+  const rp = railPath(u.side, a.id, b.id);
+  out.push({ k: 'rail', from: a.id, to: b.id, nodes: rp ? rp.nodes : [a.id, b.id] });
+  if (dist(tx, ty, b.x, b.y) > 8) out.push({ k: 'walk', x: tx, y: ty });
+  return out;
+}
+/* 철도역 선택: 출발지 근처(RAIL_ACCESS_RADIUS) 역 → 목표에 더 가까운 아무 역. 도보보다 충분히 빠를 때만 */
+function bestRailPair(u, sx, sy, tx, ty) {
   const spd = u.T.speed, rs = railSpeedOf(u), direct = dist(sx, sy, tx, ty);
-  if (direct < 260) return walk;
+  if (direct < 260) return null;
   const walkT = direct * 1.15 / spd;
-  const A = nearestStations(u.side, sx, sy, 3), B = nearestStations(u.side, tx, ty, 3);
-  if (!A.length || !B.length) return walk;
+  const A = nearestStations(u.side, sx, sy, 3);
+  if (!A.length) return null;
+  const B = G.stations[u.side].map(n => ({ n, d: dist(n.x, n.y, tx, ty) })).filter(o => o.d < direct * 0.85).sort((a, b) => a.d - b.d).slice(0, 5);
+  if (!B.length) return null;
   let best = walkT * 0.8, plan = null;
   for (const a of A) {
     const { d } = railDijkstra(u.side, a.n.id);
@@ -773,15 +800,16 @@ function planRoute(u, sx, sy, tx, ty, allowRail) {
       if (t < best) { best = t; plan = { a: a.n, b: b.n }; }
     }
   }
-  if (!plan) return walk;
-  const out = [];
-  if (dist(sx, sy, plan.a.x, plan.a.y) > CONFIG.CAPTURE_RADIUS * 0.7) out.push({ k: 'walk', x: plan.a.x, y: plan.a.y, station: plan.a.id });
-  const rp = railPath(u.side, plan.a.id, plan.b.id);
-  out.push({ k: 'rail', from: plan.a.id, to: plan.b.id, nodes: rp ? rp.nodes : [plan.a.id, plan.b.id] });
-  if (dist(tx, ty, plan.b.x, plan.b.y) > 8) out.push({ k: 'walk', x: tx, y: ty });
-  return out;
+  return plan;
 }
-function issueMove(u, x, y, append, allowRail = true) {
+function planRoute(u, sx, sy, tx, ty, allowRail, forced) {
+  if (allowRail) {
+    const plan = forced || bestRailPair(u, sx, sy, tx, ty);
+    if (plan) return railOrders(u, sx, sy, tx, ty, plan.a, plan.b);
+  }
+  return [{ k: 'walk', x: tx, y: ty }];
+}
+function issueMove(u, x, y, append, allowRail = true, forced = null, fc = -1) {
   if (!u.alive || u.mode === 'routed') return;
   x = clamp(x, 10, CONFIG.WORLD_W - 10); y = clamp(y, 10, CONFIG.WORLD_H - 10);
   let sx = u.x, sy = u.y;
@@ -799,8 +827,8 @@ function issueMove(u, x, y, append, allowRail = true) {
     const lo = u.orders[u.orders.length - 1];
     if (lo.k === 'walk') { sx = lo.x; sy = lo.y; } else { const nn = G.nodes[lo.to]; sx = nn.x; sy = nn.y; }
   }
-  const plan = planRoute(u, sx, sy, x, y, allowRail);
-  for (const o of plan) u.orders.push(o);
+  const plan = planRoute(u, sx, sy, x, y, allowRail, forced && dist(sx, sy, forced.a.x, forced.a.y) < CONFIG.RAIL_ACCESS_RADIUS * 1.6 ? forced : null);
+  for (const o of plan) { if (o.k === 'walk' && fc >= 0) o.fc = fc; u.orders.push(o); }
   if (u.mode === 'idle') u.mode = 'move';
   u.stuck = 0;
   return plan.some(o => o.k === 'rail');
@@ -819,14 +847,24 @@ function formationSlots(n, x, y, spacing) {
 function orderGroup(list, x, y, append, allowRail = true) {
   const us = list.filter(u => u.alive && u.mode !== 'routed');
   if (!us.length) return 0;
-  const slots = formationSlots(us.length, x, y, 23);
+  const slots = formationSlots(us.length, x, y, 25);
+  // 그룹 전체가 같은 역 쌍을 사용 (부대가 철도/도보로 갈라지지 않게) + 공유 흐름장
+  let forced = null;
+  if (allowRail && us.length > 1) {
+    let cx = 0, cy = 0;
+    for (const u of us) { const lo = append && u.orders.length ? u.orders[u.orders.length - 1] : null; const p = lo ? (lo.k === 'walk' ? lo : G.nodes[lo.to]) : u; cx += p.x; cy += p.y; }
+    cx /= us.length; cy /= us.length;
+    const rep = us.reduce((a, b) => (a.T.speed <= b.T.speed ? a : b));
+    forced = bestRailPair(rep, cx, cy, x, y);
+  }
+  const fc = us.length > 1 ? cellOf(x, y) : -1;
   const remaining = us.slice().sort((a, b) => dist2(a.x, a.y, x, y) - dist2(b.x, b.y, x, y));
   let rail = 0;
   for (const s of slots) {
     let bi = 0, bd = Infinity;
     for (let i = 0; i < remaining.length; i++) { const d = dist2(remaining[i].x, remaining[i].y, s.x, s.y); if (d < bd) { bd = d; bi = i; } }
     const u = remaining.splice(bi, 1)[0];
-    if (issueMove(u, s.x, s.y, append, allowRail)) rail++;
+    if (issueMove(u, s.x, s.y, append, allowRail, forced, fc)) rail++;
   }
   return rail;
 }
@@ -836,6 +874,7 @@ function orderGroup(list, x, y, append, allowRail = true) {
  * ===================================================================== */
 function nextOrder(u) {
   u.orders.shift(); u.stuck = 0; u.lastD = Infinity;
+  if (!u.orders.length) u.speedCap = 0;
   u.mode = u.orders.length ? 'move' : 'idle';
 }
 function enemyBlocks(u, nx, ny) {
@@ -848,8 +887,8 @@ function enemyBlocks(u, nx, ny) {
   }
   return false;
 }
-function stepToward(u, tx, ty, dt, maxD) {
-  steer(u, tx, ty);
+function stepToward(u, tx, ty, dt, maxD, fc = -1) {
+  steer(u, tx, ty, fc);
   const dx = STEER_X - u.x, dy = STEER_Y - u.y, dl = Math.hypot(dx, dy);
   if (dl < 0.01) return false;
   const step = Math.min(unitSpeed(u) * dt, maxD);
@@ -863,15 +902,16 @@ function walkStep(u, o, dt) {
   const arrive = o.station !== undefined ? CONFIG.CAPTURE_RADIUS * 0.7 : 3;
   const d = dist(u.x, u.y, o.x, o.y);
   if (d <= arrive) { nextOrder(u); return; }
-  stepToward(u, o.x, o.y, dt, d);
+  stepToward(u, o.x, o.y, dt, d, o.fc === undefined ? -1 : o.fc);
   const prog = (u.lastD === undefined ? Infinity : u.lastD) - d;
   u.lastD = d;
-  if (prog < unitSpeed(u) * dt * 0.25) u.stuck += dt; else u.stuck = Math.max(0, u.stuck - dt * 2);
+  if (G.time - u.engagedT < 0.5) u.stuck = 0;
+  else if (prog < unitSpeed(u) * dt * 0.25) u.stuck += dt; else u.stuck = Math.max(0, u.stuck - dt * 2);
   if ((u.stuck > 1.6 && d < 55) || (u.stuck > 4 && d < 110 && G.time - u.engagedT > 3)) nextOrder(u);
 }
 function beginBoard(u, o) {
   const st = G.nodes[o.from];
-  if (st.owner !== u.side || dist(u.x, u.y, st.x, st.y) > CONFIG.CAPTURE_RADIUS + 25) { nextOrder(u); return; }
+  if (st.owner !== u.side || dist(u.x, u.y, st.x, st.y) > 160) { nextOrder(u); return; }
   u.mode = 'board'; u.timer = CONFIG.RAIL_BOARD_TIME;
 }
 function leaveTrain(u) { u.train = null; nextOrder(u); }
@@ -1056,7 +1096,7 @@ function surrender(u) {
   addFx('flag', u.x, u.y, u.side); removeUnit(u);
 }
 function routUnit(u) {
-  if (u.enc) { surrender(u); return; }
+  if (u.enc && u.encTime >= CONFIG.ENC_CONFIRM_TIME) { surrender(u); return; }
   if (u.str <= u.T.str * CONFIG.ROUT_DESTROY_STR) { destroyUnit(u); return; }
   if (u.train) u.train = null;
   u.mode = 'routed'; u.routT = CONFIG.ROUT_TIME; u.orders = []; u.org = 0;
@@ -1076,7 +1116,7 @@ function routUnit(u) {
 function checkUnit(u) {
   if (!u.alive) return;
   if (u.str <= 0.5) { destroyUnit(u); return; }
-  if (u.enc && (u.org <= 0 || u.encTime >= CONFIG.SURRENDER_TIME_ENCIRCLED)) { surrender(u); return; }
+  if (u.enc && ((u.org <= 0 && u.encTime >= CONFIG.ENC_CONFIRM_TIME) || u.encTime >= CONFIG.SURRENDER_TIME_ENCIRCLED)) { surrender(u); return; }
   if (u.sup === SUP_CUT && !u.enc && u.cutTime >= CONFIG.SURRENDER_TIME_CUT && u.org < 20) { surrender(u); return; }
   if (u.org <= 0 && u.mode !== 'routed' && u.mode !== 'train') routUnit(u);
   else if (u.mode === 'routed' && u.str <= u.T.str * CONFIG.ROUT_DESTROY_STR && G.time - u.engagedT < 1) destroyUnit(u);
@@ -1135,9 +1175,10 @@ function captureNode(n, s) {
   n.garrison = n.garrisonMax * 0.15; n.chaosUntil = G.time + CONFIG.CHAOS_TIME;
   if (prev && n.queue.length) n.queue = [];
   n.prodT = 0;
-  for (const ri of n.rails) {
+  n.isoSince = -1;
+  for (const ri of n.rails.slice()) {
     const r = G.rails[ri]; if (!r.alive) continue;
-    if (r.building) { if (r.builder !== s) cancelRail(r); continue; }
+    if (r.building) { if (r.builder !== s) cancelRail(r, true); continue; }
     if (r.owner !== s) { r.owner = s; r.gaugeUntil = G.time + CONFIG.RAIL_GAUGE_TIME; r.damaged = false; r.repair = 0; }
   }
   G.stats[s].nodesCaptured++; G.territoryVer++; G.railVer++;
@@ -1175,8 +1216,9 @@ function startRailBuild(side, a, b) {
   if (side === 1) sfx('build');
   return { ok: true, rail: r };
 }
-function cancelRail(r) {
+function cancelRail(r, refund) {
   r.alive = false;
+  if (refund && r.builder) G.res[r.builder] += Math.round(r.cost * (1 - r.progress) * 0.5);
   for (const id of [r.a, r.b]) { const n = G.nodes[id]; const i = n.rails.indexOf(r.id); if (i >= 0) n.rails.splice(i, 1); }
   G.railVer++;
 }
@@ -1215,7 +1257,7 @@ function updateRails(dt) {
       }
     }
     if (r.building) {
-      if (A.owner !== r.builder && B.owner !== r.builder) { cancelRail(r); continue; }
+      if (A.owner !== r.builder && B.owner !== r.builder) { cancelRail(r, true); continue; }
       const can = A.owner !== 3 - r.builder && B.owner !== 3 - r.builder && !r.enemyOn;
       if (can) {
         r.progress += dt / r.buildTime;
@@ -1292,7 +1334,7 @@ function updateInfluence() {
   for (const u of G.units) {
     if (!u.alive || u.mode === 'train') continue;
     const I = u.side === 1 ? I1 : I2;
-    const w = (0.35 + 0.65 * u.str / u.T.str) * (u.mode === 'routed' ? 0.3 : 1);
+    const w = (0.35 + 0.65 * u.str / u.T.str) * (u.mode === 'routed' ? 0.3 : 1) * (u.enc ? CONFIG.ENC_ZOC_MULT : 1);
     const ucx = Math.floor(u.x / CELL), ucy = Math.floor(u.y / CELL);
     for (let y = Math.max(0, ucy - rc); y <= Math.min(GH - 1, ucy + rc); y++) {
       for (let x = Math.max(0, ucx - rc); x <= Math.min(GW - 1, ucx + rc); x++) {
@@ -1322,38 +1364,52 @@ function roadBlocked(r, s) {
 }
 const NODE_COST = new Float64Array(256);
 function nodeNetwork(s) {
-  const N = G.nodes, RANGE = CONFIG.NODE_SUPPLY_RANGE, cost = NODE_COST;
-  const chaosP = (1 - CONFIG.CHAOS_SUPPLY_MULT) * RANGE;
+  const N = G.nodes, RANGE = CONFIG.NODE_SUPPLY_RANGE, cost = NODE_COST, B = G.sup.blocked[s];
+  const MULT = CONFIG.CHAOS_SUPPLY_MULT;
   const isChaos = n => G.time < n.chaosUntil;
   cost.fill(Infinity, 0, N.length);
   const queue = [], inQ = new Uint8Array(N.length);
+  const seed = (n, c) => { if (c < cost[n.id]) { cost[n.id] = c; if (!inQ[n.id]) { inQ[n.id] = 1; queue.push(n.id); } } };
+  const run = () => {
+    let guard = 0;
+    while (queue.length && guard++ < 20000) {
+      const i = queue.shift(); inQ[i] = 0;
+      const n = N[i];
+      let c = cost[i];
+      // 연결된 도시는 재송출, 연결된 보급창은 완전 재송출
+      if (n.type === 'city' && c < RANGE) c = Math.min(c, (1 - CONFIG.CITY_RELAY_Q) * RANGE);
+      if (n.type === 'depot' && c < RANGE && !B[n.cell]) c = 0;
+      // 혼란 거점: 연결되어 있으면 약한 보급(배율)만 통과
+      if (isChaos(n)) c = Math.max(c, (1 - MULT * (1 - c / RANGE)) * RANGE);
+      cost[i] = c;
+      if (n.type !== 'capital' && B[n.cell]) continue;        // 적에게 제압된 거점은 중계 불가 (도로·철도 동일)
+      for (const ri of n.roads) {
+        const r = G.roads[ri], j = r.a === i ? r.b : r.a;
+        if (N[j].owner !== s || roadBlocked(r, s)) continue;
+        const nc = c + r.len;
+        if (nc < cost[j] && nc < RANGE) { cost[j] = nc; if (!inQ[j]) { inQ[j] = 1; queue.push(j); } }
+      }
+      for (const ri of n.rails) {
+        const r = G.rails[ri]; if (!railUsable(r, s)) continue;
+        const j = r.a === i ? r.b : r.a;
+        const nc = c + r.len * CONFIG.RAIL_SUPPLY_COST;
+        if (nc < cost[j] && nc < RANGE) { cost[j] = nc; if (!inQ[j]) { inQ[j] = 1; queue.push(j); } }
+      }
+    }
+  };
+  // 1) 수도에서 출발
+  for (const n of N) if (n.owner === s && n.type === 'capital') seed(n, 0);
+  run();
+  // 2) 수도망과 끊긴 보급창은 비축분이 남아 있는 동안만 약해지며 송출
+  let extra = false;
   for (const n of N) {
-    if (n.owner !== s || (n.type !== 'capital' && n.type !== 'depot')) continue;
-    if (G.sup.blocked[s][n.cell] && n.type === 'depot') continue;   // 포위·제압된 보급창은 송출 불가
-    cost[n.id] = isChaos(n) ? chaosP : 0; queue.push(n.id); inQ[n.id] = 1;
+    if (n.owner !== s || n.type !== 'depot') continue;
+    if (cost[n.id] < RANGE) { n.isoSince = -1; continue; }
+    if (!(n.isoSince >= 0)) n.isoSince = G.time;
+    const used = (G.time - n.isoSince) / CONFIG.DEPOT_STOCK_TIME;
+    if (used < 1 && !B[n.cell]) { seed(n, used * RANGE); extra = true; }
   }
-  let guard = 0;
-  while (queue.length && guard++ < 20000) {
-    const i = queue.shift(); inQ[i] = 0;
-    const n = N[i];
-    let c = cost[i];
-    if (n.type === 'city' && c < RANGE) {
-      const relay = (1 - CONFIG.CITY_RELAY_Q * (isChaos(n) ? CONFIG.CHAOS_SUPPLY_MULT : 1)) * RANGE;
-      if (relay < c) { c = cost[i] = relay; }
-    }
-    for (const ri of n.roads) {
-      const r = G.roads[ri], j = r.a === i ? r.b : r.a;
-      if (N[j].owner !== s || roadBlocked(r, s)) continue;
-      const nc = c + r.len + (isChaos(N[j]) ? chaosP : 0);
-      if (nc < cost[j] && nc < RANGE) { cost[j] = nc; if (!inQ[j]) { inQ[j] = 1; queue.push(j); } }
-    }
-    for (const ri of n.rails) {
-      const r = G.rails[ri]; if (!railUsable(r, s)) continue;
-      const j = r.a === i ? r.b : r.a;
-      const nc = c + r.len * CONFIG.RAIL_SUPPLY_COST + (isChaos(N[j]) ? chaosP : 0);
-      if (nc < cost[j] && nc < RANGE) { cost[j] = nc; if (!inQ[j]) { inQ[j] = 1; queue.push(j); } }
-    }
-  }
+  if (extra) run();
   for (const n of N) n.q[s] = n.owner === s ? Math.max(0, 1 - cost[n.id] / RANGE) : 0;
 }
 function supplyField(s) {
@@ -1385,22 +1441,44 @@ function supplyField(s) {
   G.sup.ver[s]++;
 }
 const SUPPLY_COST_BUF = new Float32Array(NC);
+const COMP_ID = new Int32Array(NC), COMP_SEEN = new Int32Array(NC), COMP_Q = new Int32Array(NC);
+let compStamp = 0;
+/* 도달 불가 셀들의 연결 성분 안에 아군이 장악한 셀이 있으면 '포위 주머니' → 포위.
+   적 영향권 한가운데 짓눌린 부대(주머니 없음)는 보급 차단일 뿐 포위가 아님. */
 function refreshUnitSupply(s) {
-  const D = G.sup.dist[s], FR = CONFIG.FIELD_RANGE;
+  const D = G.sup.dist[s], B = G.sup.blocked[s], FR = CONFIG.FIELD_RANGE;
+  const stamp = ++compStamp, open = [];
+  const pocketAt = c => {
+    if (COMP_SEEN[c] === stamp) return open[COMP_ID[c]];
+    const id = open.length; let isOpen = false, h = 0, t = 0;
+    COMP_Q[t++] = c; COMP_SEEN[c] = stamp; COMP_ID[c] = id;
+    while (h < t) {
+      const k = COMP_Q[h++]; if (!B[k]) isOpen = true;
+      const kx = k % GW, ky = (k - kx) / GW;
+      for (let q = 0; q < 8; q++) {
+        const nx = kx + NB_DX[q], ny = ky + NB_DY[q];
+        if (nx < 0 || ny < 0 || nx >= GW || ny >= GH) continue;
+        const n = ny * GW + nx;
+        if (COMP_SEEN[n] === stamp || D[n] !== Infinity) continue;
+        COMP_SEEN[n] = stamp; COMP_ID[n] = id; COMP_Q[t++] = n;
+      }
+    }
+    open.push(isOpen); return isOpen;
+  };
   let newlyEnc = 0;
   for (const u of G.units) {
     if (!u.alive || u.side !== s) continue;
     if (u.mode === 'train') { u.sup = SUP_OK; u.q = 1; u.enc = false; continue; }
-    const d = D[cellOf(u.x, u.y)];
+    const c = cellOf(u.x, u.y), d = D[c];
     const wasEnc = u.enc;
-    u.enc = d === Infinity;
-    u.q = u.enc ? 0 : Math.max(0, 1 - d / FR);
+    u.enc = d === Infinity && pocketAt(c);
+    u.q = d === Infinity ? 0 : Math.max(0, 1 - d / FR);
     u.sup = u.enc ? SUP_CUT : u.q >= CONFIG.SUPPLY_OK ? SUP_OK : u.q > 0 ? SUP_LOW : SUP_CUT;
     if (u.enc && !wasEnc) newlyEnc++;
   }
-  for (const n of G.nodes) n.enc = n.owner === s ? (n.q[s] <= 0 && D[n.cell] === Infinity) : (n.owner ? n.enc : false);
-  if (newlyEnc && G.time - G.encAlertT > 8) {
-    G.encAlertT = G.time;
+  for (const n of G.nodes) if (n.owner === s) n.enc = n.q[s] <= 0 && D[n.cell] === Infinity; else if (!n.owner) n.enc = false;
+  if (newlyEnc && G.time - G.encAlertT[s] > 8) {
+    G.encAlertT[s] = G.time;
     if (s === 1) { toast(`경고: 아군 ${newlyEnc}개 부대가 포위되었습니다!`, 'big'); sfx('alarm'); }
     else { toast(`적 ${newlyEnc}개 부대 포위 완성!`, 'good'); sfx('encircle'); }
   }
@@ -1471,7 +1549,8 @@ class AI {
       const a = u.ai; if (!a) continue;
       if (a.task === 'expand' && N[a.target].owner !== 0) u.ai = null;
       else if (a.task === 'defend' && N[a.target].owner !== s) u.ai = null;
-      else if (a.task === 'defend' && (G.time - a.t > 35 || (N[a.target]._threat < 20 && G.time - a.t > 15))) u.ai = null;
+      else if (a.task === 'defend' && N[a.target]._threat >= 20 && G.time - a.t > 35 && G.time - (a.t0 || a.t) < 150) a.t = G.time;
+      else if (a.task === 'defend' && (G.time - a.t > 35 || (N[a.target]._threat < 20 && G.time - a.t > 15))) u.ai = { task: 'garrison', target: a.target, t: G.time };
       else if ((a.task === 'breakout' || a.task === 'retreat') && (G.time - a.t > 25 || (u.mode === 'idle' && !u.enc))) u.ai = null;
       else if (a.op && !this.ops.some(o => o.id === a.op)) u.ai = null;
     }
@@ -1492,7 +1571,8 @@ class AI {
       if (u.mode === 'routed' || u.mode === 'train' || rng() > this.P.crisis) continue;
       if (u.enc) {
         if (u.ai && (u.ai.task === 'breakout') && G.time - u.ai.t < 12) continue;
-        const t = this.findSupplied(u);
+        let t = this.findSupplied(u);
+        if (!t) { let bd = Infinity; for (const nd of G.nodes) if (nd.owner === s && nd.q[s] > 0) { const d = dist2(nd.x, nd.y, u.x, u.y); if (d < bd) { bd = d; t = nd; } } }
         if (t) { issueMove(u, t.x, t.y, false, false); u.ai = { task: 'breakout', t: G.time }; G.stats[s].breakouts++; this.note('포위된 부대 돌파 시도'); }
       } else if (u.sup !== SUP_OK && (!u.ai || (u.ai.task !== 'retreat' && u.ai.task !== 'breakout'))) {
         if (u.ai && u.ai.task === 'op' && u.sup === SUP_LOW) continue;
@@ -1525,7 +1605,7 @@ class AI {
     for (const u of this.my) cnt[u.type]++;
     let queued = 0;
     for (const n of G.nodes) if (n.owner === s) for (const t of n.queue) { cnt[t]++; queued++; }
-    const ratio = this.diff === 'hard' ? { inf: 0.45, mech: 0.35, art: 0.2 } : { inf: 0.52, mech: 0.28, art: 0.2 };
+    const ratio = { inf: 0.52, mech: 0.28, art: 0.2 };
     for (let k = 0; k < 4; k++) {
       const total = cnt.inf + cnt.mech + cnt.art + 1;
       let type = 'inf', bd = -Infinity;
@@ -1548,6 +1628,10 @@ class AI {
     this.railReserve = 0;
     const building = G.rails.filter(r => r.alive && r.building && r.builder === s).length;
     if (building >= this.P.railBuild) return;
+    // 철도에 자원을 과투자하지 않도록: 보유 철도 수 ≤ 보유 거점 수 × 0.9, 병력이 상한에 가까울 때만 여유 건설
+    const ownRails = G.rails.filter(r => r.alive && (r.owner === s || r.builder === s)).length, ownNodes = N.filter(n => n.owner === s).length;
+    if (ownRails >= ownNodes * 0.9) return;
+    const nearCap = G.unitCount[s] >= unitCap(s) - 4;
     const comp = new Set([s - 1]), stack = [s - 1];
     while (stack.length) {
       const i = stack.pop();
@@ -1565,14 +1649,16 @@ class AI {
         const chk = canBuildRail(s, a, b.id);
         if (!chk.ok && !/자원/.test(chk.reason)) continue;
         const frontF = 1 - clamp(b._front / 1600, 0, 1);
-        let v = b.owner === s ? 2 + frontF * 4 + (b.type === 'depot' ? 1 : 0) + (b._threat > 30 ? 2 : 0) + (PROD_TYPES[b.type] ? 0.5 : 0)
+        if (b.owner === s && b._front > 900 && !nearCap) continue;          // 후방 연결은 여유 있을 때만
+        let v = b.owner === s ? 1 + frontF * 5 + (b.type === 'depot' ? 1 : 0) + (b._threat > 30 ? 2 : 0) + (PROD_TYPES[b.type] ? 0.5 : 0)
           : (b.garrison < 40 ? 1.2 : 0.4) + frontF * 1.5;
         v *= 1 / (chk.cost / 70 + 0.6);
         if (v > bs) { bs = v; best = { a, b: b.id, cost: chk.cost }; }
       }
     }
     if (!best) return;
-    if (G.res[s] >= best.cost) {
+    const keep = nearCap ? 0 : 60;                                          // 병력 생산용 여유 자원
+    if (G.res[s] >= best.cost + keep) {
       const r = startRailBuild(s, best.a, best.b);
       if (r.ok) this.note(`철도 건설 시작: ${N[best.a].name} → ${N[best.b].name}`);
     } else if (G.time > 40) this.railReserve = Math.min(best.cost, 120);
@@ -1596,7 +1682,7 @@ class AI {
       const pick = []; let got = 0;
       for (const c of cand) { if (got >= need || pick.length >= 10) break; pick.push(c.u); got += this.pow(c.u); }
       if (!pick.length) continue;
-      for (const u of pick) u.ai = { task: 'defend', target: n.id, t: G.time };
+      for (const u of pick) u.ai = { task: 'defend', target: n.id, t: G.time, t0: G.time };
       defenders += pick.length;
       const viaRail = this.send(pick, n.x, n.y);
       G.stats[s].reinforce++;
@@ -1637,13 +1723,14 @@ class AI {
   offense() {
     const s = this.side, e = this.enemy, N = G.nodes;
     if (G.time < this.P.firstAttack) return;
-    const maxOps = this.P.ops + Math.floor(this.my.length / 45);
+    const idle = this.my.filter(u => this.free(u)).length;
+    const maxOps = Math.min(5, this.P.ops + Math.floor(idle / 12));
     if (this.ops.filter(o => o.type === 'attack').length >= maxOps) return;
     let best = null, bs = 0;
     const myP = this.my.reduce((a, u) => a + this.pow(u), 0), foeP = this.foe.reduce((a, u) => a + this.pow(u), 0);
-    const superior = G.time > 300 && myP > foeP * 1.4;
+    const superior = G.time > 300 && myP > foeP * 1.25;
     for (const n of N) {
-      if (n.owner !== e) continue;
+      if (n.owner !== e || this.ops.some(o => o.type === 'attack' && o.target === n.id)) continue;
       let dm = Infinity, stage = null;
       for (const m of N) if (m.owner === s) {
         const d = dist(m.x, m.y, n.x, n.y); const adj = d - (G.stations[s].includes(m) ? 200 : 0) + m._threat * 0.3;
@@ -1659,12 +1746,16 @@ class AI {
     }
     if (!best) return;
     // 시간이 지날수록 공세 기준 완화 (교착 방지)
-    const late = clamp((G.time - 360) / 1200, 0, 1);
-    const need = Math.max(best.def * this.P.attackRatio * (1 - 0.25 * late) + 60, this.diff === 'easy' ? 200 : 380);
+    const late = clamp((G.time - 300) / 600, 0, 1);
+    const need = Math.max(best.def * this.P.attackRatio * (1 - 0.35 * late) + 60, this.diff === 'easy' ? 200 : 380);
     const cand = this.my.filter(u => this.free(u) && u.type !== 'mech' || (this.free(u) && u.type === 'mech' && rng() < 0.6))
       .map(u => ({ u, t: this.eta(u, best.stage.x, best.stage.y) })).filter(c => c.t < 110).sort((a, b) => a.t - b.t);
+    // 남는 병력이 많으면 더 크게 투입 (교착 방지). 우세하면 상한 확대
+    const freeP = cand.reduce((a, c) => a + this.pow(c.u), 0);
+    const goal = Math.max(need * 1.2, freeP * (0.3 + 0.2 * late));
+    const cap = superior ? Math.max(this.P.opMax, 60) : this.P.opMax;
     const pick = []; let got = 0;
-    for (const c of cand) { if (got >= need * 1.2 || pick.length >= this.P.opMax) break; pick.push(c.u); got += this.pow(c.u); }
+    for (const c of cand) { if (got >= goal || pick.length >= cap) break; pick.push(c.u); got += this.pow(c.u); }
     if (got < need) { this.wantPower = need; return; }
     const op = { id: this.opId++, type: 'attack', target: best.n.id, stage: best.stage.id, units: pick.map(u => u.id), phase: 'gather', t0: G.time, p0: got };
     this.ops.push(op);
@@ -1676,7 +1767,7 @@ class AI {
     const s = this.side, N = G.nodes;
     const byId = new Map(this.my.map(u => [u.id, u]));
     for (const op of this.ops.slice()) {
-      const us = op.units.map(id => byId.get(id)).filter(u => u && u.alive);
+      const us = op.units.map(id => byId.get(id)).filter(u => u && u.alive && u.ai && u.ai.op === op.id);
       op.units = us.map(u => u.id);
       const done = () => { this.ops.splice(this.ops.indexOf(op), 1); for (const u of us) if (u.ai && u.ai.op === op.id) u.ai = null; };
       if (!us.length) { done(); continue; }
@@ -1696,6 +1787,7 @@ class AI {
           for (const u of keep) u.ai = { task: 'garrison', target: T.id, t: G.time };
           if (next && us.length - keep.length >= 2) {
             const rest = us.filter(u => !keep.includes(u));
+            for (const u of rest) u.ai = { task: 'op', op: op.id, t: G.time };
             op.target = next.id; op.stage = T.id; op.units = rest.map(u => u.id); op.ta = G.time; op.p0 = rest.reduce((a, u) => a + this.pow(u), 0);
             orderGroup(rest.filter(u => u.mode !== 'routed'), next.x, next.y, false, false);
             G.stats[s].attacks++;
@@ -1709,7 +1801,10 @@ class AI {
           for (const u of us) { const p = this.pow(u); total += p; if (dist(u.x, u.y, S.x, S.y) < 280 && u.mode !== 'train') arrived += p; else if (u.mode === 'idle') issueMove(u, S.x + rand(-40, 40), S.y + rand(-40, 40), false, rng() < this.P.railUse); }
           if (arrived >= total * 0.75 || G.time - op.t0 > 75) {
             op.phase = 'attack'; op.ta = G.time; G.stats[s].attacks++;
-            orderGroup(us.filter(u => u.mode !== 'routed'), T.x, T.y, false, false);
+            const go = us.filter(u => u.mode !== 'routed');
+            const slow = Math.min(...go.map(u => u.T.speed));
+            for (const u of go) u.speedCap = slow;              // 동시 도착: 가장 느린 부대 속도에 맞춤
+            orderGroup(go, T.x, T.y, false, false);
             this.note(`총공격 개시: ${T.name} (${us.length}개 부대 동시 공격)`);
           }
         } else {
@@ -1723,6 +1818,12 @@ class AI {
         }
       } else if (op.type === 'raid') {
         if (G.time - op.t0 > 150) { done(); continue; }
+        if (us.reduce((a, u) => a + this.pow(u), 0) < op.p0 * 0.5) {   // 손실이 크면 철수
+          this.note('포위 기동 실패, 철수'); done();
+          let home = null, hd = Infinity; for (const nd of N) if (nd.owner === s && nd.q[s] > 0) { const d = dist(nd.x, nd.y, us[0].x, us[0].y); if (d < hd) { hd = d; home = nd; } }
+          if (home) this.send(us.filter(u => u.mode !== 'routed'), home.x, home.y);
+          continue;
+        }
         if (op.kind === 'rail') {
           const r = G.rails[op.rail];
           if (!r.alive || r.owner === s) { done(); continue; }
@@ -1739,7 +1840,7 @@ class AI {
   /* 5) 포위 기동: 기계화로 측면/후방 철도·보급창·보급선 차단 */
   encircle() {
     const s = this.side, e = this.enemy, N = G.nodes;
-    if (rng() > this.P.encircle * 0.5) return;
+    if (rng() > this.P.encircle * 0.5 || G.time < this.P.firstAttack * 0.5) return;
     const maxRaids = this.diff === 'hard' ? 2 : 1;
     if (this.ops.filter(o => o.type === 'raid').length >= maxRaids) return;
     const mechs = this.my.filter(u => u.type === 'mech' && this.free(u) && u.org > u.T.org * 0.6);
@@ -1781,11 +1882,19 @@ class AI {
         cands.push({ kind: 'pocket', x: px, y: py, sc: weak.length * 0.5 / (def + 40) / (1 + dist(cx, cy, px, py) / 1400) * 1.5 });
       }
     }
-    if (!cands.length) return;
-    cands.sort((a, b) => b.sc - a.sc);
-    const t = cands[0];
-    const defT = this.powerNear(e, t.x, t.y, 280) + (t.kind === 'node' ? N[t.target].garrison : 0);
-    const n = clamp(Math.ceil((defT + 40) / 110) + 1, 2, 5);
+    // 전선 근처(아군 거점에서 900 이내)의 측면·후방 목표만, 진격로 위 적 전력 반영
+    const frontD = (x, y) => { let m = Infinity; for (const nd of N) if (nd.owner === s) m = Math.min(m, dist(nd.x, nd.y, x, y)); return m; };
+    const ok = cands.filter(c => frontD(c.x, c.y) <= 900 && dist(cx, cy, c.x, c.y) <= 1600).sort((a, b) => b.sc - a.sc).slice(0, 5);
+    if (!ok.length) return;
+    for (const c of ok) {
+      c.path = 0;
+      for (let k = 1; k <= 4; k++) c.path += 0.5 * this.powerNear(e, lerp(cx, c.x, k / 5), lerp(cy, c.y, k / 5), 200);
+      c.sc2 = c.sc / (1 + c.path / 150);
+    }
+    ok.sort((a, b) => b.sc2 - a.sc2);
+    const t = ok[0];
+    const defT = this.powerNear(e, t.x, t.y, 280) + (t.kind === 'node' ? N[t.target].garrison : 0) + t.path * 0.5;
+    const n = clamp(Math.ceil((defT + 40) / 110) + 1, 2, 6);
     const group = mechs.sort((a, b) => dist2(a.x, a.y, t.x, t.y) - dist2(b.x, b.y, t.x, t.y)).slice(0, n);
     // 우회 경로: 직선 중간에 적이 많으면 측면으로 돌아감
     const gx = group.reduce((a, u) => a + u.x, 0) / group.length, gy = group.reduce((a, u) => a + u.y, 0) / group.length;
@@ -1797,7 +1906,7 @@ class AI {
         .map(o => ({ ...o, p: this.powerNear(e, o.x, o.y, 300) })).sort((a, b) => a.p - b.p);
       wp = opts[0];
     }
-    const op = { id: this.opId++, type: 'raid', kind: t.kind, rail: t.rail, target: t.target, x: t.x, y: t.y, units: group.map(u => u.id), t0: G.time };
+    const op = { id: this.opId++, type: 'raid', kind: t.kind, rail: t.rail, target: t.target, x: t.x, y: t.y, units: group.map(u => u.id), t0: G.time, p0: group.reduce((a, u) => a + this.pow(u), 0) };
     this.ops.push(op);
     for (const u of group) u.ai = { task: 'op', op: op.id, t: G.time };
     if (wp) { orderGroup(group, wp.x, wp.y, false, false); orderGroup(group, t.x, t.y, true, false); }
@@ -1834,7 +1943,7 @@ const mmCv = document.getElementById('minimap'), mctx = mmCv.getContext('2d');
 let VW = 800, VH = 600, DPR = 1;
 const cam = { x: 600, y: 1100, z: 0.55 };
 const UI = {
-  supply: false, railOv: false, build: false, buildA: null, sel: [], selNode: null, drag: null,
+  supply: 0, railOv: false, inspect: null, build: false, buildA: null, sel: [], selNode: null, drag: null,
   mouse: { x: 0, y: 0, wx: 0, wy: 0, inside: false }, hoverNode: null, speed: 1, paused: false, sound: true,
   keys: {}, panDrag: null, lastClick: 0, frame: 0, started: false,
 };
@@ -1927,20 +2036,20 @@ function buildTerritory() {
   g.putImageData(img, 0, 0);
   RC.territoryVer = G.territoryVer;
 }
-function buildSupplyOverlay() {
-  const g = RC.supply.getContext('2d'), img = g.createImageData(GW, GH), d = img.data, D = G.sup.dist[1], FR = CONFIG.FIELD_RANGE, M = G.M;
+function buildSupplyOverlay(side) {
+  const g = RC.supply.getContext('2d'), img = g.createImageData(GW, GH), d = img.data, D = G.sup.dist[side], FR = CONFIG.FIELD_RANGE, M = G.M;
   const hasUnit = new Uint8Array(NC);
-  for (const u of G.units) if (u.alive && u.side === 1 && u.mode !== 'train') hasUnit[cellOf(u.x, u.y)] = 1;
+  for (const u of G.units) if (u.alive && u.side === side && u.mode !== 'train') hasUnit[cellOf(u.x, u.y)] = 1;
   for (let c = 0; c < NC; c++) {
     const k = c * 4, q = D[c] === Infinity ? -1 : 1 - D[c] / FR;
-    const ownT = G.nodes[M.cellNode[c]].owner === 1;
+    const ownT = G.nodes[M.cellNode[c]].owner === side;
     if (q >= CONFIG.SUPPLY_OK) { d[k] = 63; d[k + 1] = 174; d[k + 2] = 99; d[k + 3] = 105; }
     else if (q > 0) { d[k] = 227; d[k + 1] = 181; d[k + 2] = 42; d[k + 3] = 115; }
     else if (ownT || hasUnit[c]) { d[k] = 210; d[k + 1] = 63; d[k + 2] = 63; d[k + 3] = q < 0 ? 150 : 110; }
     else d[k + 3] = 0;
   }
   g.putImageData(img, 0, 0);
-  RC.supplyVer = G.sup.ver[1];
+  RC.supplyVer = G.sup.ver[side]; RC.supplySide = side;
 }
 function addFx(type, x, y, side) { if (G.fx.length < 400) G.fx.push({ type, x, y, side, t: G.time }); }
 
@@ -1988,7 +2097,7 @@ function drawRails(z) {
     } else if (G.time < r.gaugeUntil) {
       g.strokeStyle = '#e58a1f'; g.lineWidth = 3; g.setLineDash([3, 6]); g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(B.x, B.y); g.stroke(); g.setLineDash([]);
       if (z > 0.35) { g.fillStyle = '#9a5300'; g.font = `bold ${11 / Math.max(z, 0.6)}px sans-serif`; g.textAlign = 'center'; g.fillText(`궤간 전환 ${Math.ceil(r.gaugeUntil - G.time)}s`, mx + px * 16, my + py * 16); }
-    } else if (ov) {
+    } else if (ov && r.load > 0) {
       g.fillStyle = usableBy ? '#fff' : '#ddd'; g.strokeStyle = '#222'; g.lineWidth = 1;
       const t = `${r.load}/${CONFIG.RAIL_CAPACITY}`; g.font = `bold ${11 / Math.max(z, 0.6)}px sans-serif`; g.textAlign = 'center';
       const w = 30 / Math.max(z, 0.6), h = 15 / Math.max(z, 0.6);
@@ -2001,8 +2110,8 @@ function drawNodes(z) {
   for (const n of G.nodes) {
     const r = (n.type === 'capital' ? 15 : n.type === 'fortress' ? 12.5 : 11) * Math.max(1, 0.75 * inv);
     const C = CONFIG.COLORS[n.owner];
-    if (UI.supply && n.owner === 1) {
-      const q = n.q[1]; g.strokeStyle = q >= CONFIG.SUPPLY_OK ? '#2f9e57' : q > 0 ? '#d9a21b' : '#d23f3f';
+    if (UI.supply && n.owner === UI.supply) {
+      const q = n.q[n.owner]; g.strokeStyle = q >= CONFIG.SUPPLY_OK ? '#2f9e57' : q > 0 ? '#d9a21b' : '#d23f3f';
       g.lineWidth = 4; g.beginPath(); g.arc(n.x, n.y, r + 9, 0, 7); g.stroke();
     }
     nodeShape(g, n, r);
@@ -2027,11 +2136,13 @@ function drawNodes(z) {
       g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(n.x - w / 2, y, w, 3.5);
       g.fillStyle = n.owner ? C.dark : '#555'; g.fillRect(n.x - w / 2, y, w * f, 3.5);
     }
+    if (!UI.build && UI.hoverNode === n) { g.strokeStyle = 'rgba(20,20,20,0.45)'; g.lineWidth = 1.5; g.beginPath(); g.arc(n.x, n.y, r + 13, 0, 7); g.stroke(); }
     if (UI.selNode === n) { g.strokeStyle = '#111'; g.lineWidth = 2; g.setLineDash([4, 3]); g.beginPath(); g.arc(n.x, n.y, r + 16, 0, 7); g.stroke(); g.setLineDash([]); }
     if (UI.build && (UI.hoverNode === n || UI.buildA === n.id)) { g.strokeStyle = '#f2c230'; g.lineWidth = 3; g.beginPath(); g.arc(n.x, n.y, r + 14, 0, 7); g.stroke(); }
-    if (z > 0.5) {
-      g.font = `${n.type === 'capital' ? 'bold ' : ''}${(n.type === 'capital' ? 13 : 11) * Math.max(1, 0.8 * inv)}px sans-serif`; g.textAlign = 'center';
-      g.fillStyle = 'rgba(30,30,30,0.75)'; g.fillText(n.name, n.x, n.y - r - 7);
+    if (z > 0.4 || n.type === 'capital') {
+      g.font = `${n.type === 'capital' ? 'bold ' : '600 '}${(n.type === 'capital' ? 14 : 12) / Math.min(1, z)}px sans-serif`; g.textAlign = 'center';
+      g.lineJoin = 'round'; g.lineWidth = 3.5 / Math.min(1, z); g.strokeStyle = 'rgba(250,248,242,0.9)'; g.strokeText(n.name, n.x, n.y - r - 7);
+      g.fillStyle = '#1d232b'; g.fillText(n.name, n.x, n.y - r - 7);
     }
   }
 }
@@ -2045,24 +2156,31 @@ function drawUnits(alpha, z) {
     if (x < vx0 || x > vx1 || y < vy0 || y > vy1) continue;
     const C = CONFIG.COLORS[u.side];
     if (u.mode === 'train') {
-      g.save(); g.translate(x, y); g.rotate(u.facing);
-      g.fillStyle = C.dark; g.fillRect(-11, -5, 22, 10); g.fillStyle = '#fff'; g.fillRect(-7, -1.5, 14, 3);
+      const k = Math.max(1, 0.7 * inv);
+      g.save(); g.translate(x, y); g.rotate(u.facing); g.scale(k, k);
+      if (u.selected) { g.strokeStyle = '#111'; g.lineWidth = 2; g.strokeRect(-14, -8, 28, 16); }
+      g.fillStyle = C.main; g.fillRect(-12, -5.5, 24, 11); g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.strokeRect(-12, -5.5, 24, 11);
+      g.fillStyle = '#fff'; g.fillRect(-8, -1.5, 16, 3);
       g.restore(); continue;
     }
     const r = Math.max(minR, u.T.r * (0.75 + 0.25 * Math.sqrt(u.str / u.T.str)));
-    if (u.enc) { g.strokeStyle = `rgba(200,20,20,${0.55 + 0.45 * pulse})`; g.lineWidth = 3.2; g.beginPath(); g.arc(x, y, r + 4, 0, 7); g.stroke(); }
+    if (u.enc) { g.strokeStyle = `rgba(200,20,20,${0.55 + 0.45 * pulse})`; g.lineWidth = Math.max(3.2, 2 * inv); g.beginPath(); g.arc(x, y, r + 4, 0, 7); g.stroke(); }
+    else if (u.mode === 'wait' || u.mode === 'board' || u.mode === 'unload') { g.strokeStyle = C.dark; g.lineWidth = 1.5; g.setLineDash([2.5, 2.5]); g.beginPath(); g.arc(x, y, r + 3.5, 0, 7); g.stroke(); g.setLineDash([]); }
     g.beginPath(); g.arc(x, y, r, 0, 7);
-    g.fillStyle = u.mode === 'routed' ? C.light : (G.time - u.hitT < 0.12 ? '#fff' : C.main); g.fill();
-    g.lineWidth = Math.max(1.2, 1.4 * inv * 0.6); g.strokeStyle = u.selected ? '#111' : 'rgba(255,255,255,0.95)'; g.stroke();
+    g.fillStyle = u.mode === 'routed' ? C.light : C.main; g.fill();
+    const hit = G.time - u.hitT < 0.15 && (G.tick + u.id) % 6 < 3;
+    g.lineWidth = Math.max(1.2, (hit ? 2.2 : 1.4) * inv * 0.6); g.strokeStyle = u.selected ? '#111' : hit ? '#ffd65a' : 'rgba(255,255,255,0.95)'; g.stroke();
     if (u.selected) { g.strokeStyle = '#111'; g.lineWidth = 1.6 * Math.max(1, inv * 0.5); g.beginPath(); g.arc(x, y, r + 3.2, 0, 7); g.stroke(); }
     if (r > 3.5) {
       g.strokeStyle = '#fff'; g.fillStyle = '#fff'; g.lineWidth = r * 0.22;
       if (u.type === 'mech') { const a = u.facing, c = Math.cos(a), s = Math.sin(a); g.beginPath(); g.moveTo(x - c * r * 0.5 - s * r * 0.45, y - s * r * 0.5 + c * r * 0.45); g.lineTo(x + c * r * 0.4, y + s * r * 0.4); g.lineTo(x - c * r * 0.5 + s * r * 0.45, y - s * r * 0.5 - c * r * 0.45); g.stroke(); }
       else if (u.type === 'art') { g.beginPath(); g.arc(x, y, r * 0.32, 0, 7); g.fill(); }
     }
-    if (u.side === 1 && (UI.supply || showBars || u.selected) && u.sup !== SUP_OK) {
-      g.fillStyle = u.sup === SUP_LOW ? '#e3b52a' : '#d23f3f'; g.beginPath(); g.arc(x + r * 0.8, y - r * 0.8, Math.max(2.4, r * 0.38), 0, 7); g.fill();
-      g.strokeStyle = '#fff'; g.lineWidth = 1; g.stroke();
+    if (u.sup === SUP_CUT || (u.sup === SUP_LOW && (UI.supply || showBars || u.selected))) {
+      const pr = Math.max(2.6 * inv, r * 0.4), px = x + r * 0.8, py = y - r * 0.8;
+      g.fillStyle = u.sup === SUP_LOW ? '#e3b52a' : '#5c0d0d'; g.beginPath(); g.arc(px, py, pr, 0, 7); g.fill();
+      g.strokeStyle = '#fff'; g.lineWidth = Math.max(1, 0.9 * inv); g.stroke();
+      if (u.sup === SUP_CUT && pr > 2.5) { g.beginPath(); g.moveTo(px, py - pr * 0.55); g.lineTo(px, py + pr * 0.1); g.moveTo(px, py + pr * 0.38); g.lineTo(px, py + pr * 0.45); g.stroke(); }
     }
     if (showBars || u.selected) {
       const w = 18, by = y + r + 3;
@@ -2096,6 +2214,11 @@ function drawFx(z) {
 }
 function drawOrders(z) {
   const g = ctx; let n = 0;
+  if (UI.sel.length && G.stations[1]) {
+    g.strokeStyle = 'rgba(31,79,176,0.28)'; g.lineWidth = 1.5 / z; g.setLineDash([6 / z, 6 / z]); g.beginPath();
+    for (const st of G.stations[1]) { g.moveTo(st.x + CONFIG.RAIL_ACCESS_RADIUS, st.y); g.arc(st.x, st.y, CONFIG.RAIL_ACCESS_RADIUS, 0, Math.PI * 2); }
+    g.stroke(); g.setLineDash([]);
+  }
   g.lineWidth = 1.3 / z; g.setLineDash([5 / z, 5 / z]);
   for (const u of UI.sel) {
     if (!u.alive || n++ > 80 || !u.orders.length) continue;
@@ -2140,10 +2263,11 @@ function render(alpha) {
   if (RC.territoryVer !== G.territoryVer) buildTerritory();
   g.globalAlpha = UI.railOv ? 0.45 : 1; g.drawImage(RC.territory, 0, 0, CONFIG.WORLD_W, CONFIG.WORLD_H); g.globalAlpha = 1;
   if (UI.supply) {
-    if (RC.supplyVer !== G.sup.ver[1]) buildSupplyOverlay();
+    const sd = UI.supply;
+    if (RC.supplyVer !== G.sup.ver[sd] || RC.supplySide !== sd) buildSupplyOverlay(sd);
     g.drawImage(RC.supply, 0, 0, CONFIG.WORLD_W, CONFIG.WORLD_H);
     g.lineWidth = 3; g.setLineDash([8, 6]); g.strokeStyle = 'rgba(200,30,30,0.85)'; g.beginPath();
-    for (const r of G.roads) { const A = G.nodes[r.a], B = G.nodes[r.b]; if (A.owner === 1 && B.owner === 1 && roadBlocked(r, 1)) { g.moveTo(A.x, A.y); g.lineTo(B.x, B.y); } }
+    for (const r of G.roads) { const A = G.nodes[r.a], B = G.nodes[r.b]; if (A.owner === sd && B.owner === sd && roadBlocked(r, sd)) { g.moveTo(A.x, A.y); g.lineTo(B.x, B.y); } }
     g.stroke(); g.setLineDash([]);
   }
   if (UI.railOv) { g.fillStyle = 'rgba(245,243,236,0.45)'; g.fillRect(0, 0, CONFIG.WORLD_W, CONFIG.WORLD_H); }
@@ -2227,12 +2351,20 @@ function sfx(name, arg) {
  *  UI: 토스트 / HUD / 선택 패널
  * ===================================================================== */
 const $ = id => document.getElementById(id);
+const TOASTS = new Map();
 function toast(msg, cls) {
   if (UI.fastStep) return;
-  const box = $('toasts'); const d = document.createElement('div');
-  d.className = 'toast ' + (cls || ''); d.textContent = msg; box.appendChild(d);
-  while (box.children.length > 5) box.removeChild(box.firstChild);
-  setTimeout(() => d.classList.add('fade'), 3000); setTimeout(() => d.remove(), 3600);
+  const box = $('toasts'), key = msg.replace(/[0-9]+/g, '#');
+  let t = TOASTS.get(key);
+  if (t && t.el.isConnected && !t.el.classList.contains('fade')) {     // 같은 종류 메시지는 합침
+    t.n++; t.el.textContent = msg + (t.n > 1 ? `  ×${t.n}` : ''); clearTimeout(t.h1); clearTimeout(t.h2);
+  } else {
+    const el = document.createElement('div'); el.className = 'toast ' + (cls || ''); el.textContent = msg; box.appendChild(el);
+    t = { el, n: 1 }; TOASTS.set(key, t);
+    while (box.children.length > 4) box.removeChild(box.firstChild);
+  }
+  const el = t.el;
+  t.h1 = setTimeout(() => el.classList.add('fade'), 3000); t.h2 = setTimeout(() => { el.remove(); if (TOASTS.get(key) === t) TOASTS.delete(key); }, 3600);
 }
 function flushSurrenders() {
   if (G.time - G.surrFlushT < 1.5) return;
@@ -2241,6 +2373,7 @@ function flushSurrenders() {
   if (G.pendingSurr[2]) { toast(`아군 ${G.pendingSurr[2]}개 부대가 포위되어 항복했습니다`, 'big'); sfx('lost'); G.pendingSurr[2] = 0; }
 }
 function updateHUD() {
+  if (!G) return;
   $('hRes').textContent = Math.floor(G.res[1]);
   $('hInc').textContent = `+${G.income[1].toFixed(1)}/s`;
   let n1 = 0, n2 = 0; for (const n of G.nodes) { if (n.owner === 1) n1++; else if (n.owner === 2) n2++; }
@@ -2251,7 +2384,9 @@ function updateHUD() {
   $('hTime').textContent = fmtTime(G.time);
   $('bPause').classList.toggle('on', UI.paused);
   $('bS1').classList.toggle('on', UI.speed === 1); $('bS2').classList.toggle('on', UI.speed === 2); $('bS4').classList.toggle('on', UI.speed === 4);
-  $('bBuild').classList.toggle('on', UI.build); $('bSupply').classList.toggle('on', UI.supply); $('bRail').classList.toggle('on', UI.railOv);
+  $('bBuild').classList.toggle('on', UI.build); $('bSupply').classList.toggle('on', !!UI.supply); $('bRail').classList.toggle('on', UI.railOv);
+  $('bSupply').innerHTML = (UI.supply === 2 ? '보급(적)' : '보급') + '<kbd>S</kbd>';
+  $('legendSide').textContent = UI.supply === 2 ? '적 보급망 기준 (S: 끄기)' : '아군 보급망 기준 (S: 적 보급망 보기)';
   $('bSound').textContent = UI.sound ? '🔊' : '🔇'; $('bSound').insertAdjacentHTML('beforeend', '<kbd>M</kbd>');
   $('legend').style.display = UI.supply ? 'block' : 'none';
 }
@@ -2289,11 +2424,12 @@ function updatePanel() {
     } else if (!own) h += `<div style="color:#6b7280;font-size:11.5px;margin-top:4px">수비대를 격파한 뒤 적 없이 부대를 머무르게 하면 점령합니다 (${(CONFIG.CAPTURE_TIME * CONFIG.CAPTURE_MULT[n.type]).toFixed(0)}초)</div>`;
     p.innerHTML = h; p.style.display = 'block'; return;
   }
-  if (!UI.sel.length) { p.style.display = 'none'; return; }
+  if (UI.inspect && !UI.inspect.alive) UI.inspect = null;
+  if (!UI.sel.length && !UI.inspect) { p.style.display = 'none'; return; }
   let h = '';
-  if (UI.sel.length === 1) {
-    const u = UI.sel[0], T = u.T;
-    h += `<h3><span class="dotb" style="background:${CONFIG.COLORS[u.side].main}"></span>${T.name} 부대 <span style="color:#6b7280;font-weight:400">#${u.id}</span></h3>`;
+  if (UI.sel.length === 1 || !UI.sel.length) {
+    const u = UI.sel[0] || UI.inspect, T = u.T;
+    h += `<h3><span class="dotb" style="background:${CONFIG.COLORS[u.side].main}"></span>${u.side === 2 ? '적 ' : ''}${T.name} 부대 <span style="color:#6b7280;font-weight:400">#${u.id}</span></h3>`;
     h += `<div class="row"><span>병력</span><b>${Math.ceil(u.str)} / ${T.str}</b></div>${bar(u.str / T.str, '#2b2b2b')}`;
     h += `<div class="row"><span>조직력</span><b>${Math.max(0, Math.ceil(u.org))} / ${T.org}</b></div>${bar(u.org / T.org, '#e0a020')}`;
     h += `<div class="row"><span>보급</span><span>${SUP_TAG[u.sup]}${u.enc ? ' <span class="tag enc">포위됨</span>' : ''} ${(u.q * 100).toFixed(0)}%</span></div>`;
@@ -2311,7 +2447,7 @@ function updatePanel() {
     h += `<div class="row"><span>보급</span><span><span class="tag ok">${sup[0]}</span> <span class="tag low">${sup[1]}</span> <span class="tag cut">${sup[2]}</span>${enc ? ` <span class="tag enc">포위 ${enc}</span>` : ''}</span></div>`;
     if (train) h += `<div class="row"><span>열차 수송</span><span>${train}개 부대</span></div>`;
   }
-  h += `<div style="color:#6b7280;font-size:11px;margin-top:5px">우클릭 이동 · 철도역 근처면 자동 열차 수송 · Shift 웨이포인트 · Q 정지</div>`;
+  if (UI.sel.length) h += `<div style="color:#6b7280;font-size:11px;margin-top:5px">우클릭 이동 · 출발지 ${CONFIG.RAIL_ACCESS_RADIUS} 이내에 철도역(점선 원)이 있으면 자동 열차 수송 · Shift 웨이포인트 · Q 정지</div>`;
   p.innerHTML = h; p.style.display = 'block';
 }
 
@@ -2331,7 +2467,7 @@ function unitAt(wx, wy, side) {
 function setSelection(list, add) {
   if (!add) { for (const u of UI.sel) u.selected = false; UI.sel = []; }
   for (const u of list) if (!u.selected && u.alive && u.side === 1) { u.selected = true; UI.sel.push(u); }
-  if (UI.sel.length) UI.selNode = null;
+  if (UI.sel.length) { UI.selNode = null; UI.inspect = null; }
   updatePanel();
 }
 function setBuild(on) {
@@ -2407,8 +2543,10 @@ window.addEventListener('mouseup', e => {
     return;
   }
   const n = nodeAt(wx, wy);
-  if (n) { if (!d.shift) setSelection([], false); UI.selNode = n; updatePanel(); sfx('select'); return; }
-  if (!d.shift) { setSelection([], false); UI.selNode = null; updatePanel(); }
+  if (n) { if (!d.shift) setSelection([], false); UI.selNode = n; UI.inspect = null; updatePanel(); sfx('select'); return; }
+  const eu = unitAt(wx, wy, 2);
+  if (eu) { setSelection([], false); UI.selNode = null; UI.inspect = eu; updatePanel(); sfx('select'); return; }
+  if (!d.shift) { setSelection([], false); UI.selNode = null; UI.inspect = null; updatePanel(); }
 });
 cv.addEventListener('wheel', e => {
   if (!UI.started) return;
@@ -2433,22 +2571,25 @@ function togglePause() { UI.paused = !UI.paused; updateHUD(); }
 window.addEventListener('keydown', e => {
   if (!UI.started || !G) return;
   const k = e.key.toLowerCase();
+  if (!$('helpScreen').classList.contains('hidden')) { if (e.key === 'Escape' || k === 'h' || e.key === '?') openHelp(false); return; }
+  if (G.over) return;
+  if (e.target && e.target.tagName === 'INPUT') return;
   UI.keys[e.key] = true;
   if (e.key === ' ') { togglePause(); e.preventDefault(); }
   else if (k === '1' && !e.ctrlKey) setSpeed(1);
   else if (k === '2' && !e.ctrlKey) setSpeed(2);
   else if (k === '3' && !e.ctrlKey) setSpeed(4);
   else if (k === 'r') setBuild(!UI.build);
-  else if (k === 's') { UI.supply = !UI.supply; updateHUD(); }
+  else if (k === 's') cycleSupply();
   else if (k === 't') { UI.railOv = !UI.railOv; updateHUD(); }
   else if (k === 'm') { UI.sound = !UI.sound; updateHUD(); }
-  else if (k === 'h' || e.key === '?') $('helpScreen').classList.toggle('hidden');
+  else if (k === 'h' || e.key === '?') openHelp(true);
   else if (k === 'z') produce('inf');
   else if (k === 'x') produce('mech');
   else if (k === 'c') produce('art');
   else if (k === 'q') { for (const u of UI.sel) if (u.mode !== 'routed' && u.mode !== 'train' && u.mode !== 'unload') { u.orders = []; u.train = null; u.mode = 'idle'; } }
   else if (k === 'a' && (e.ctrlKey || e.metaKey)) { setSelection(G.units.filter(u => u.alive && u.side === 1), false); e.preventDefault(); }
-  else if (e.key === 'Escape') { if (UI.build) setBuild(false); else { setSelection([], false); UI.selNode = null; updatePanel(); } $('helpScreen').classList.add('hidden'); }
+  else if (e.key === 'Escape') { if (UI.build) setBuild(false); else { setSelection([], false); UI.selNode = null; UI.inspect = null; updatePanel(); } }
   else if (k === 'f' && UI.sel.length) { cam.x = UI.sel[0].x; cam.y = UI.sel[0].y; }
   if (e.key.startsWith('Arrow')) e.preventDefault();
 });
@@ -2463,14 +2604,34 @@ function panCamera(rdt) {
     if (m.y < 5) dy -= sp; else if (m.y > VH - 5) dy += sp;
   }
   if (dx || dy) { cam.x += dx; cam.y += dy; clampCam(); }
+  if (UI.mouse.inside) {
+    UI.mouse.wx = s2wX(UI.mouse.x); UI.mouse.wy = s2wY(UI.mouse.y);
+    if (UI.frame % 3 === 0) {
+      UI.hoverNode = nodeAt(UI.mouse.wx, UI.mouse.wy);
+      const c = UI.build ? 'crosshair' : (UI.hoverNode || unitAt(UI.mouse.wx, UI.mouse.wy)) ? 'pointer' : 'default';
+      if (cv.style.cursor !== c) cv.style.cursor = c;
+    }
+  }
 }
-$('bPause').onclick = togglePause; $('bS1').onclick = () => setSpeed(1); $('bS2').onclick = () => setSpeed(2); $('bS4').onclick = () => setSpeed(4);
-$('bBuild').onclick = () => setBuild(!UI.build);
-$('bSupply').onclick = () => { UI.supply = !UI.supply; updateHUD(); };
-$('bRail').onclick = () => { UI.railOv = !UI.railOv; updateHUD(); };
+for (const b of document.querySelectorAll('#hud .hbtn')) b.addEventListener('mousedown', e => e.preventDefault());   // 포커스 금지 (Enter/Space 재발동 방지)
+$('bPause').onclick = () => { if (UI.started) togglePause(); };
+$('bS1').onclick = () => { if (UI.started) setSpeed(1); }; $('bS2').onclick = () => { if (UI.started) setSpeed(2); }; $('bS4').onclick = () => { if (UI.started) setSpeed(4); };
+$('bBuild').onclick = () => { if (UI.started) setBuild(!UI.build); };
+function cycleSupply() { UI.supply = (UI.supply + 1) % 3; updateHUD(); }
+$('bSupply').onclick = () => { if (UI.started) cycleSupply(); };
+$('bRail').onclick = () => { if (UI.started) { UI.railOv = !UI.railOv; updateHUD(); } };
 $('bSound').onclick = () => { UI.sound = !UI.sound; updateHUD(); };
-$('bHelp').onclick = () => $('helpScreen').classList.toggle('hidden');
-$('btnHelpClose').onclick = () => $('helpScreen').classList.add('hidden');
+function openHelp(open) {
+  const h = $('helpScreen'), isOpen = !h.classList.contains('hidden');
+  if (open === undefined) open = !isOpen;
+  if (open === isOpen) return;
+  h.classList.toggle('hidden', !open);
+  if (!UI.started) return;
+  if (open) { UI.wasPaused = UI.paused; UI.paused = true; } else UI.paused = !!UI.wasPaused;
+  updateHUD();
+}
+$('bHelp').onclick = () => openHelp();
+$('btnHelpClose').onclick = () => openHelp(false);
 
 /* =====================================================================
  *  게임 흐름: 시작 / 종료 / 메인 루프 (고정 tick + 보간 렌더링)
@@ -2485,6 +2646,8 @@ function startGame(diff, seed) {
   initMoveCost();
   buildTerrainCanvas();
   UI.sel = []; UI.selNode = null; UI.build = false; UI.buildA = null; UI.paused = false; UI.speed = 1; UI.started = true;
+  UI.supply = 0; UI.railOv = false; UI.drag = null; UI.panDrag = null; UI.hoverNode = null; UI.inspect = null; UI.keys = {}; acc = 0;
+  $('toasts').innerHTML = ''; $('helpScreen').classList.add('hidden'); UI.wasPaused = false;
   UI.sound = $('optSound').checked;
   const cap = G.nodes[0]; cam.x = cap.x + 380; cam.y = cap.y; cam.z = 0.62; clampCam();
   $('startScreen').classList.add('hidden'); $('endScreen').classList.add('hidden');
@@ -2499,7 +2662,6 @@ $('btnRestart').onclick = () => {
 function endGame(winner) {
   if (G.over) return;
   G.over = true; G.winner = winner; G.endTime = G.time;
-  if (UI.fastStep) return;
   sfx(winner === 1 ? 'win' : 'lose');
   setTimeout(() => {
     const t = $('endTitle'); t.textContent = winner === 1 ? '승리' : '패배'; t.className = winner === 1 ? 'win' : 'lose';
@@ -2514,7 +2676,7 @@ function endGame(winner) {
   }, 1300);
 }
 function simTick() {
-  G.time += DT; G.tick++;
+  G.time += DT; G.tick++; G.fieldBudget = 6;
   rebuildHash();
   updateMovement(DT);
   rebuildHash();
