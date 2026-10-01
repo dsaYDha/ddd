@@ -164,7 +164,7 @@ const CONFIG = {
     { key: 'river',    name: '강',   speed: 0.36, def: 1.15, supply: 2.2 },
   ],
   ROAD_SPEED_MULT: 1.35,       // 도로 위 이동 배율 (지형 무시)
-  ROAD_SUPPLY_COST: 0.55,      // 도로 셀의 보급 전달 비용
+  ROAD_SUPPLY_COST: 0.7,       // 도로 셀의 보급 전달 비용
 
   UNIT: {
     inf:  { name: '보병',   speed: 15, str: 100, atk: 1.00, def: 1.20, org: 100, range: 0,   cost: 40, build: 10, r: 10.5 },
@@ -227,6 +227,7 @@ const CONFIG = {
   ORG_DRAIN_CUT: 1.4,          // 보급 차단 시 조직력 감소/초
   ORG_DRAIN_ENCIRCLED: 3.6,    // 포위 시 조직력 감소/초
   STR_ATTRITION_CUT: 0.35,     // 보급 차단 시 병력 손실/초
+  CUT_GRACE: 20,               // 보급 차단 후 휴대 보급으로 버티는 시간 (포위는 즉시 감소)
   SURRENDER_TIME_CUT: 75,      // 보급 차단 상태로 이 시간 이상 & 조직력<20 → 항복
   SURRENDER_TIME_ENCIRCLED: 22,// 포위 상태로 이 시간 버티면 항복
   ENC_CONFIRM_TIME: 4,         // 포위 판정 후 이 시간이 지나야 조직력 붕괴 시 항복 (오판 방지)
@@ -767,8 +768,8 @@ function railPath(side, from, to) {
 function refreshStations() {
   for (const s of [1, 2]) G.stations[s] = G.nodes.filter(n => n.owner === s && n.rails.some(ri => railUsable(G.rails[ri], s)));
 }
-function nearestStations(s, x, y, max) {
-  const out = [], R2 = CONFIG.RAIL_ACCESS_RADIUS * CONFIG.RAIL_ACCESS_RADIUS;
+function nearestStations(s, x, y, max, rMul = 1) {
+  const out = [], R2 = (CONFIG.RAIL_ACCESS_RADIUS * rMul) ** 2;
   for (const n of G.stations[s]) { const d = dist2(n.x, n.y, x, y); if (d <= R2) out.push({ n, d: Math.sqrt(d) }); }
   out.sort((a, b) => a.d - b.d); out.length = Math.min(out.length, max);
   return out;
@@ -783,13 +784,14 @@ function railOrders(u, sx, sy, tx, ty, a, b) {
   return out;
 }
 /* 철도역 선택: 출발지 근처(RAIL_ACCESS_RADIUS) 역 → 목표에 더 가까운 아무 역. 도보보다 충분히 빠를 때만 */
-function bestRailPair(u, sx, sy, tx, ty) {
+function bestRailPair(u, sx, sy, tx, ty, fixedB) {
   const spd = u.T.speed, rs = railSpeedOf(u), direct = dist(sx, sy, tx, ty);
   if (direct < 260) return null;
   const walkT = direct * 1.15 / spd;
-  const A = nearestStations(u.side, sx, sy, 3);
+  const A = nearestStations(u.side, sx, sy, 3, fixedB ? 1.6 : 1);
   if (!A.length) return null;
-  const B = G.stations[u.side].map(n => ({ n, d: dist(n.x, n.y, tx, ty) })).filter(o => o.d < direct * 0.85).sort((a, b) => a.d - b.d).slice(0, 5);
+  const B = fixedB ? (fixedB.owner === u.side ? [{ n: fixedB, d: dist(fixedB.x, fixedB.y, tx, ty) }] : [])
+    : G.stations[u.side].map(n => ({ n, d: dist(n.x, n.y, tx, ty) })).filter(o => o.d < direct * 0.85).sort((a, b) => a.d - b.d).slice(0, 5);
   if (!B.length) return null;
   let best = walkT * 0.8, plan = null;
   for (const a of A) {
@@ -802,9 +804,9 @@ function bestRailPair(u, sx, sy, tx, ty) {
   }
   return plan;
 }
-function planRoute(u, sx, sy, tx, ty, allowRail, forced) {
+function planRoute(u, sx, sy, tx, ty, allowRail, groupB) {
   if (allowRail) {
-    const plan = forced || bestRailPair(u, sx, sy, tx, ty);
+    const plan = bestRailPair(u, sx, sy, tx, ty, groupB);
     if (plan) return railOrders(u, sx, sy, tx, ty, plan.a, plan.b);
   }
   return [{ k: 'walk', x: tx, y: ty }];
@@ -827,8 +829,8 @@ function issueMove(u, x, y, append, allowRail = true, forced = null, fc = -1) {
     const lo = u.orders[u.orders.length - 1];
     if (lo.k === 'walk') { sx = lo.x; sy = lo.y; } else { const nn = G.nodes[lo.to]; sx = nn.x; sy = nn.y; }
   }
-  const plan = planRoute(u, sx, sy, x, y, allowRail, forced && dist(sx, sy, forced.a.x, forced.a.y) < CONFIG.RAIL_ACCESS_RADIUS * 1.6 ? forced : null);
-  for (const o of plan) { if (o.k === 'walk' && fc >= 0) o.fc = fc; u.orders.push(o); }
+  const plan = planRoute(u, sx, sy, x, y, allowRail, forced ? forced.b : null);
+  for (const o of plan) { if (o.k === 'walk' && fc >= 0 && o.station === undefined) o.fc = fc; u.orders.push(o); }
   if (u.mode === 'idle') u.mode = 'move';
   u.stuck = 0;
   return plan.some(o => o.k === 'rail');
@@ -1092,7 +1094,7 @@ function destroyUnit(u) {
 }
 function surrender(u) {
   const e = 3 - u.side; G.stats[u.side].lost++; G.stats[e].prisoners++;
-  if (u.enc) { G.stats[e].encKills++; G.pendingSurr[e]++; }
+  G.stats[e].encKills++; G.pendingSurr[e]++;              // 포위·보급 차단으로 인한 항복 = 포위 섬멸
   addFx('flag', u.x, u.y, u.side); removeUnit(u);
 }
 function routUnit(u) {
@@ -1132,7 +1134,7 @@ function updateUnitStatus(dt) {
       u.org -= CONFIG.ORG_DRAIN_ENCIRCLED * dt; u.str -= CONFIG.STR_ATTRITION_CUT * 1.5 * dt;
     } else if (u.sup === SUP_CUT) {
       u.encTime = Math.max(0, u.encTime - dt * 2); u.cutTime += dt;
-      u.org -= CONFIG.ORG_DRAIN_CUT * dt; u.str -= CONFIG.STR_ATTRITION_CUT * dt;
+      if (u.cutTime > CONFIG.CUT_GRACE) { u.org -= CONFIG.ORG_DRAIN_CUT * dt; u.str -= CONFIG.STR_ATTRITION_CUT * dt; }
     } else {
       u.encTime = Math.max(0, u.encTime - dt * 2); u.cutTime = Math.max(0, u.cutTime - dt * 2);
       if (u.sup === SUP_OK && !engaged) {
@@ -1363,25 +1365,27 @@ function roadBlocked(r, s) {
   return false;
 }
 const NODE_COST = new Float64Array(256);
+const NODE_OUT = new Float64Array(256);
 function nodeNetwork(s) {
-  const N = G.nodes, RANGE = CONFIG.NODE_SUPPLY_RANGE, cost = NODE_COST, B = G.sup.blocked[s];
+  const N = G.nodes, RANGE = CONFIG.NODE_SUPPLY_RANGE, cost = NODE_COST, out = NODE_OUT, B = G.sup.blocked[s];
   const MULT = CONFIG.CHAOS_SUPPLY_MULT;
   const isChaos = n => G.time < n.chaosUntil;
-  cost.fill(Infinity, 0, N.length);
-  const queue = [], inQ = new Uint8Array(N.length);
+  cost.fill(Infinity, 0, N.length); out.fill(Infinity, 0, N.length);
+  const queue = [], inQ = new Uint8Array(N.length), stock = new Uint8Array(N.length);
   const seed = (n, c) => { if (c < cost[n.id]) { cost[n.id] = c; if (!inQ[n.id]) { inQ[n.id] = 1; queue.push(n.id); } } };
+  // cost = 도착 비용(단조 감소), out = 재송출·혼란을 반영한 송출 비용
   const run = () => {
     let guard = 0;
     while (queue.length && guard++ < 20000) {
       const i = queue.shift(); inQ[i] = 0;
       const n = N[i];
       let c = cost[i];
-      // 연결된 도시는 재송출, 연결된 보급창은 완전 재송출
-      if (n.type === 'city' && c < RANGE) c = Math.min(c, (1 - CONFIG.CITY_RELAY_Q) * RANGE);
-      if (n.type === 'depot' && c < RANGE && !B[n.cell]) c = 0;
-      // 혼란 거점: 연결되어 있으면 약한 보급(배율)만 통과
-      if (isChaos(n)) c = Math.max(c, (1 - MULT * (1 - c / RANGE)) * RANGE);
-      cost[i] = c;
+      if (!stock[i]) {
+        if (n.type === 'city' && c < RANGE) c = Math.min(c, (1 - CONFIG.CITY_RELAY_Q) * RANGE);   // 연결된 도시 재송출
+        if (n.type === 'depot' && c < RANGE && !B[n.cell]) c = 0;                                  // 연결된 보급창 완전 재송출
+      }
+      if (isChaos(n)) c = Math.max(c, (1 - MULT * (1 - c / RANGE)) * RANGE);                      // 혼란: 약한 보급만 통과
+      out[i] = c;
       if (n.type !== 'capital' && B[n.cell]) continue;        // 적에게 제압된 거점은 중계 불가 (도로·철도 동일)
       for (const ri of n.roads) {
         const r = G.roads[ri], j = r.a === i ? r.b : r.a;
@@ -1400,17 +1404,17 @@ function nodeNetwork(s) {
   // 1) 수도에서 출발
   for (const n of N) if (n.owner === s && n.type === 'capital') seed(n, 0);
   run();
-  // 2) 수도망과 끊긴 보급창은 비축분이 남아 있는 동안만 약해지며 송출
+  // 2) 수도망과 끊긴 보급창은 비축분이 줄어드는 만큼 약해지며 송출 (비축 소진 시 차단)
   let extra = false;
   for (const n of N) {
     if (n.owner !== s || n.type !== 'depot') continue;
-    if (cost[n.id] < RANGE) { n.isoSince = -1; continue; }
+    if (out[n.id] < RANGE) { n.isoSince = -1; continue; }
     if (!(n.isoSince >= 0)) n.isoSince = G.time;
     const used = (G.time - n.isoSince) / CONFIG.DEPOT_STOCK_TIME;
-    if (used < 1 && !B[n.cell]) { seed(n, used * RANGE); extra = true; }
+    if (used < 1 && !B[n.cell]) { stock[n.id] = 1; seed(n, used * RANGE); extra = true; }
   }
   if (extra) run();
-  for (const n of N) n.q[s] = n.owner === s ? Math.max(0, 1 - cost[n.id] / RANGE) : 0;
+  for (const n of N) n.q[s] = n.owner === s ? Math.max(0, 1 - out[n.id] / RANGE) : 0;
 }
 function supplyField(s) {
   const D = G.sup.dist[s], B = G.sup.blocked[s], H = HEAP, FR = CONFIG.FIELD_RANGE, M = G.M;
@@ -1419,7 +1423,8 @@ function supplyField(s) {
   const cost = SUPPLY_COST_BUF;
   for (let c = 0; c < NC; c++) {
     const o = G.nodes[M.cellNode[c]].owner;
-    cost[c] = (M.road[c] ? CONFIG.ROAD_SUPPLY_COST : terr[M.terrain[c]].supply) * (o === s ? TC.own : o === 0 ? TC.neutral : TC.enemy);
+    const mine = o === s || G.sup.blocked[3 - s][c] === 1;      // 아군 영향권이 장악한 셀은 아군 영토처럼 (돌파 회랑)
+    cost[c] = (M.road[c] ? CONFIG.ROAD_SUPPLY_COST : terr[M.terrain[c]].supply) * (mine ? TC.own : o === 0 ? TC.neutral : TC.enemy);
   }
   for (const n of G.nodes) {
     if (n.owner !== s || n.q[s] <= 0) continue;
@@ -2177,7 +2182,7 @@ function drawUnits(alpha, z) {
       else if (u.type === 'art') { g.beginPath(); g.arc(x, y, r * 0.32, 0, 7); g.fill(); }
     }
     if (u.sup === SUP_CUT || (u.sup === SUP_LOW && (UI.supply || showBars || u.selected))) {
-      const pr = Math.max(2.6 * inv, r * 0.4), px = x + r * 0.8, py = y - r * 0.8;
+      const pr = Math.max(4.2 * inv, r * 0.42), px = x + r * 0.8, py = y - r * 0.8;
       g.fillStyle = u.sup === SUP_LOW ? '#e3b52a' : '#5c0d0d'; g.beginPath(); g.arc(px, py, pr, 0, 7); g.fill();
       g.strokeStyle = '#fff'; g.lineWidth = Math.max(1, 0.9 * inv); g.stroke();
       if (u.sup === SUP_CUT && pr > 2.5) { g.beginPath(); g.moveTo(px, py - pr * 0.55); g.lineTo(px, py + pr * 0.1); g.moveTo(px, py + pr * 0.38); g.lineTo(px, py + pr * 0.45); g.stroke(); }
@@ -2367,10 +2372,10 @@ function toast(msg, cls) {
   t.h1 = setTimeout(() => el.classList.add('fade'), 3000); t.h2 = setTimeout(() => { el.remove(); if (TOASTS.get(key) === t) TOASTS.delete(key); }, 3600);
 }
 function flushSurrenders() {
-  if (G.time - G.surrFlushT < 1.5) return;
+  if (UI.fastStep || G.time - G.surrFlushT < 1.5) return;
   G.surrFlushT = G.time;
-  if (G.pendingSurr[1]) { toast(`포위 섬멸! 적 ${G.pendingSurr[1]}개 부대 항복`, 'good big'); sfx('encircle'); G.pendingSurr[1] = 0; }
-  if (G.pendingSurr[2]) { toast(`아군 ${G.pendingSurr[2]}개 부대가 포위되어 항복했습니다`, 'big'); sfx('lost'); G.pendingSurr[2] = 0; }
+  if (G.pendingSurr[1]) { toast(`포위 섬멸! 보급이 끊긴 적 ${G.pendingSurr[1]}개 부대 항복`, 'good big'); sfx('encircle'); G.pendingSurr[1] = 0; }
+  if (G.pendingSurr[2]) { toast(`아군 ${G.pendingSurr[2]}개 부대가 포위·보급 차단으로 항복했습니다`, 'big'); sfx('lost'); G.pendingSurr[2] = 0; }
 }
 function updateHUD() {
   if (!G) return;
