@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "node scripts/sim-check.mjs",
-    "map": "node scripts/render-map.mjs map.png 2"
+    "map": "node scripts/render-map.mjs map.png 2",
+    "build:single": "vite build && node scripts/build-single.mjs"
   },
   "dependencies": {
     "three": "^0.186.1"

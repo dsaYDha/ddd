@@ -12,9 +12,14 @@ export class Input extends EventEmitter {
     this.mouseDX = 0;
     this.mouseDY = 0;
     this.locked = false;
+    // 포인터 잠금을 쓸 수 없는 환경(일부 임베드 뷰 등): 마우스를 누른 채 끌어서 시점 이동
+    this.dragLook = false;
+    this._dragging = false;
+    element.addEventListener('mousedown', (e) => { if (this.dragLook && e.button === 0) this._dragging = true; });
+    window.addEventListener('mouseup', () => { this._dragging = false; });
 
     window.addEventListener('keydown', (e) => {
-      if (PREVENT.has(e.code) || (this.locked && e.code !== 'Escape')) e.preventDefault();
+      if (PREVENT.has(e.code) || ((this.locked || this.dragLook) && e.code !== 'Escape')) e.preventDefault();
       if (!e.repeat) this.pressedQueue.add(e.code);
       this.down.add(e.code);
       this.emit('keydown', e);
@@ -24,7 +29,7 @@ export class Input extends EventEmitter {
     });
     window.addEventListener('blur', () => this.down.clear());
     document.addEventListener('mousemove', (e) => {
-      if (!this.locked) return;
+      if (!this.locked && !(this.dragLook && this._dragging)) return;
       // 일부 브라우저의 포인터 잠금 직후 튀는 값 무시
       if (Math.abs(e.movementX) > 400 || Math.abs(e.movementY) > 400) return;
       this.mouseDX += e.movementX;

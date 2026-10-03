@@ -23,6 +23,7 @@ export class Menu extends EventEmitter {
           <div id="menu-body" style="display:none">
             <p class="brief">지형 자체가 적이다. 진흙은 발을 붙잡고, 논은 걸음을 늦추고, 젖은 비탈은 몸을 끌어내린다.
               체력 바는 없다 — 숨소리와 흐려지는 시야로 몸 상태를 느껴라.</p>
+            <p class="touch-note">키보드와 마우스가 필요합니다. 데스크톱 브라우저에서 열어 주세요.</p>
             <button id="btn-play" class="primary">클릭하여 시작</button>
             <div id="lock-msg"></div>
             <div class="cols">

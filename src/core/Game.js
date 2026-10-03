@@ -118,8 +118,10 @@ export class Game {
     });
 
     // ---- 입력·창
-    this.input.on('lockchange', (locked) => (locked ? this._resume() : this._pause()));
-    this.input.on('lockerror', () => this.menu.lockFailed());
+    this.input.on('lockchange', (locked) => {
+      if (locked) { this.input.dragLook = false; this._resume(); } else if (!this.input.dragLook) this._pause();
+    });
+    this.input.on('lockerror', () => this._onLockError());
     this.input.on('keydown', (e) => this._globalKey(e));
     this.menu.on('play', () => this.play());
     this.menu.on('debug', (v) => this.debug.toggle(v));
@@ -164,10 +166,28 @@ export class Game {
     this.audio.init();
     this.audio.setVolume(this.settings.get('volume') * CONFIG.audio.master / 0.8);
     this.ambience.start();
+    if (this.input.dragLook) { this._resume(); return; }
     this.input.requestLock();
+    // 잠금이 한 번도 된 적 없는데 응답이 없으면 끌어서 보기로 전환
+    clearTimeout(this._lockTimer);
+    this._lockTimer = setTimeout(() => { if (!this.input.locked && !this._lockWorked && this.paused) this._startDragLook(); }, 700);
+  }
+
+  _onLockError() {
+    // 처음부터 잠금이 안 되는 환경 → 끌어서 보기. 잠금이 되던 환경이면(Esc 직후 재시도 제한) 다시 클릭 안내
+    if (this._lockWorked) this.menu.lockFailed();
+    else this._startDragLook();
+  }
+
+  _startDragLook() {
+    clearTimeout(this._lockTimer);
+    this.input.dragLook = true;
+    this._resume();
+    this.hud.toast('마우스를 누른 채 끌어서 시점 이동 · Esc 메뉴', 4);
   }
 
   _resume() {
+    if (this.input.locked) this._lockWorked = true;
     this.paused = false;
     this.started = true;
     this.menu.hide();
@@ -198,6 +218,7 @@ export class Game {
 
   _globalKey(e) {
     const K = CONFIG.controls;
+    if (e.code === 'Escape' && this.input.dragLook && !this.paused) { this._pause(); return; }
     if (e.code === K.debug) this.debug.toggle();
     if (e.code === K.incapacitate) this.setIncapacitated(!this.motor.hasRestriction('incapacitated'));
     if (this.debug.visible && /^Digit[1-9]$/.test(e.code) && !this.paused) {
