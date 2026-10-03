@@ -5,6 +5,7 @@
 //   ② 파편: 흙덩이·진흙덩이·나무 조각·껍질·돌 조각·대나무·덩굴 섬유·옷 보풀 — 불규칙 팔면체를 늘이고 굴림 (불투명)
 //   ③ 잎 조각: 월드 잎 아틀라스(world.textures.atlas)에서 잎이 적당히 찬 작은 창을 골라 씀, 팔랑이며 떨어짐 (알파 테스트)
 //   ④ 탄흔: 나무 구멍(어두운 구멍 + 밝게 뜯긴 생나무 테두리)·진흙 자국·바위 깨진 자국·흙 고랑·대나무 구멍
+//      (3단계: 땅의 어두운 핏자국도 같은 풀 — 진흙 자국 칸을 검붉게 물들임. 피는 작은 튐·방울·얼룩만, 고어 없음)
 //      — 인스턴스 풀(품질별 96~160), 가장 오래된 것부터 재사용, polygonOffset, 수명 끝에 서서히 사라짐
 //  조명: 모두 내장 Lambert + 캐노피 조명 패치(월드 표면과 같은 그늘·햇빛 얼룩·녹색 하늘빛) + 프로젝트 높이 안개 청크
 //        (Materials.addPatch 로 안개 유니폼이 묶임) → 숲속의 어두운 녹색 빛·ACES 톤에서 표면과 같이 어두워지고 안개에 묻힌다.
@@ -61,6 +62,7 @@ const PAL = {
   cloth: lin('#aaa787'), clothFiber: lins(['#575c39', '#4b4f31', '#6d6c4c']),
   shred: lins(['#4f6a2a', '#5f7a33', '#3f5722']),
   smoke: lin('#d8d9d4'),
+  blood: lin('#4a0a08'), bloodMist: lin('#5e1410'),
   // 발광 (선형, 톤 매핑 전 HDR 배율은 emissive)
   spark: [1.0, 0.58, 0.24], flash: [1.0, 0.7, 0.36], tracer: [1.0, 0.26, 0.05],
 };
@@ -106,6 +108,9 @@ const P_SPEC = {
   smoke: { mode: BILL, cell: 'puff', n: 4, speed: [2.5, 6], cone: 7, size: [0.05, 0.08], to: [0.45, 0.85], life: [1.6, 3.0], alpha: 0.34, color: PAL.smoke, drag: 3.2, grav: -0.015, wind: 1, grow: 1.7, fadeIn: 0.07, fadeOut: 0.8, offset: [0.04, 0.22], jitter: 0.02 },
   blast: { mode: BILL, cell: 'puff', n: 2, speed: [5, 9], cone: 6, size: [0.05, 0.07], to: [0.24, 0.32], life: [0.2, 0.32], alpha: 0.55, color: PAL.smoke, drag: 7, wind: 0.5, grow: 2.5, fadeOut: 1.2, offset: [0.02, 0.06] },
   groundBlast: { mode: BILL, cell: 'puff', n: 2, speed: [0.8, 2], cone: 25, size: [0.1, 0.15], to: [0.5, 0.7], life: [1.0, 1.6], alpha: 0.3, color: PAL.dirtDust, drag: 2.5, wind: 1, lift: 0.4, grow: 2.2, fadeOut: 1.4 },
+  // 3단계 피격: 작은 피 안개 + 방울 (고어 없음 — 멀리선 거의 안 보일 만큼)
+  bloodMist: { mode: BILL, cell: 'puff', n: 2, speed: [0.3, 0.9], cone: 25, size: [0.03, 0.05], to: [0.14, 0.22], life: [0.22, 0.4], alpha: 0.5, color: PAL.bloodMist, drag: 5, grow: 2.5, fadeOut: 1.3 },
+  bloodDrops: { mode: STREAK, cell: 'drop', n: 6, speed: [0.8, 2.6], cone: 32, size: [0.008, 0.016], life: [0.5, 0.9], alpha: 0.95, color: PAL.blood, drag: 0.6, grav: 1, stretch: 0.03, kill: true, fadeOut: 0.4, jitter: 0.02 },
   remoteFlash: { mode: BILL, cell: 'flash', n: 1, speed: [0, 0], cone: 0, size: [0.28, 0.42], life: [0.035, 0.05], alpha: 1, color: PAL.flash, emissive: 10, fadeOut: 0.5, offset: [0.05, 0.1] },
 };
 //  파편: size(대표 크기) × shape [x, y, z] 배율 (z 가 길면 가시·섬유), bounce(튕김 0 = 붙음), spin(rad/s)
@@ -134,7 +139,10 @@ const DECAL_SPEC = {
   rock: { cells: 'chip', size: [0.09, 0.12], aspect: 1, life: 90 },
   dirt: { cells: 'scuff', size: [0.13, 0.18], aspect: 1.3, life: 45 },
   bamboo: { cells: 'bhole', size: [0.05, 0.065], aspect: 1, life: 90 },
+  blood: { cells: 'splat', size: [0.16, 0.3], aspect: 1, life: 240 },
 };
+// 핏자국 색 (진흙 자국 칸 × 이 배율 → 어두운 검붉은 얼룩)
+const BLOOD_TINT = [1.55, 0.42, 0.36];
 
 // ---------------------------------------------------------------
 // 효과 아틀라스 (1024×512, 128px 칸 8×4) — 픽셀 계산, 외부 파일 없음
@@ -819,13 +827,39 @@ export class CombatFX {
     this._emitDebris(D_SPEC.leafShred, this._cnt(D_SPEC.leafShred.n), this._P, D);
   }
 
-  /** 사람(표적) 명중: { point, normal, dir } → 옷 먼지·보풀 (피는 3단계 전까지 없음) */
+  /** 사람(표적) 명중: { point, normal, dir } → 옷 먼지·보풀 (피는 blood) */
   bodyHit(e) {
     if (!e || !e.point) return;
     this._setup(e, false);
     const A = this._axis(1, 0.25, 0, -0.35);   // 법선 + 탄이 온 쪽
     this._emit(P_SPEC.clothPuff, this._cnt(P_SPEC.clothPuff.n, 1), A);
     if (this._near) this._emitDebris(D_SPEC.clothFiber, this._cnt(D_SPEC.clothFiber.n), this._P, A);
+  }
+
+  /**
+   * 3단계 피격 피: { point, normal, dir, severity, arterial } → 작은 피 안개 + 방울 (옷 먼지는 bodyHit 이 따로).
+   *  치명·동맥이면 조금 더. 땅 얼룩은 bloodStain.
+   */
+  blood(e) {
+    if (!e || !e.point) return;
+    this._setup(e, false);
+    const k = e.severity === 'lethal' || e.arterial ? 1.6 : e.severity === 'graze' ? 0.5 : 1;
+    const A = this._axis(1, 0.2, 0.1, -0.2);
+    this._emit(P_SPEC.bloodMist, this._cnt(P_SPEC.bloodMist.n * k, 1), A);
+    if (this._near) this._emit(P_SPEC.bloodDrops, this._cnt(P_SPEC.bloodDrops.n * k, 1), A);
+  }
+
+  /** 땅의 어두운 핏자국: position {x,y,z} (지면 높이는 groundHeight 로 맞춤), size 배율 (0.5~2) */
+  bloodStain(position, size = 1) {
+    if (!position) return;
+    let y = position.y;
+    if (this.groundHeight) { const g = this.groundHeight(position.x, position.z); if (Number.isFinite(g)) y = g; }
+    this._P.set(position.x + this.rng.range(-0.12, 0.12), y + 0.01, position.z + this.rng.range(-0.12, 0.12));
+    this._N.set(0, 1, 0);
+    this._D.set(0, -1, 0);
+    const S = DECAL_SPEC.blood;
+    const s = Math.min(2, Math.max(0.4, size));
+    this._decal({ ...S, size: [S.size[0] * s, S.size[1] * s] }, 'none', BLOOD_TINT);
   }
 
   /** 발사: { position, dir, ads, own = true } → 습한 공기에 남는 총구 연기 + (own) 화염 빛 flash / (원거리) 화염 스프라이트 */
@@ -1270,7 +1304,7 @@ export class CombatFX {
   }
 
   /** 탄흔 하나 — orient: 'dir' 세로축 = 표면에 투영한 탄 방향, 'up' = 위쪽(나뭇결·대나무 섬유), 'none' = 무작위 */
-  _decal(S, orient) {
+  _decal(S, orient, tint = null) {
     const limit = this.q.decals;
     const slot = this._dNext % limit;
     this._dNext = (slot + 1) % limit;
@@ -1312,7 +1346,7 @@ export class CombatFX {
     uv[slot * 4 + 2] = flip ? -this._cells[c4 + 2] : this._cells[c4 + 2];
     uv[slot * 4 + 3] = this._cells[c4 + 3];
     const C = this.cMesh.instanceColor.array, cv = rng.range(0.9, 1.08);
-    C[slot * 3] = cv; C[slot * 3 + 1] = cv; C[slot * 3 + 2] = cv;
+    C[slot * 3] = cv * (tint ? tint[0] : 1); C[slot * 3 + 1] = cv * (tint ? tint[1] : 1); C[slot * 3 + 2] = cv * (tint ? tint[2] : 1);
     const F = this.cMesh.geometry.attributes.aFx.array;
     F[slot * 4] = 1; F[slot * 4 + 1] = 0; F[slot * 4 + 2] = 0; F[slot * 4 + 3] = 0;
     this._decalDirty = true;

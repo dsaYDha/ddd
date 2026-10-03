@@ -2,6 +2,7 @@
 //  2단계: 좌클릭 사격 (끌어서 보기 모드에선 F) / 우클릭 누르기 조준 / 조준 중 Shift = 숨 참기 (달리기 아님) /
 //         R 재장전·고장 해결 / B 사격 모드 / T 탄창 확인 → weaponInput (Shooter.update 의 input)
 //         조준 중(전환 포함)에는 이동 제한 'aiming' (속도 × aim.adsMoveMul, 달리기 불가). 방아쇠를 당기면 달리기를 멈춘다.
+//  3단계: locked = true 이면 (총에 맞은 충격·사망) 마우스·키 입력을 모두 버린다 — 이동·시점·자세·사격 없음.
 import { CONFIG } from '../config.js';
 import { clamp } from '../core/math.js';
 import { EventEmitter } from '../core/EventEmitter.js';
@@ -22,6 +23,7 @@ export class PlayerController extends EventEmitter {
     this.lookDeltaPitch = 0;
     this.aim = null;   // AimModel (Game 이 붙임) — 우클릭을 놓은 뒤 총을 내리는 동안에도 조준 이동 제한 유지
     this.weaponInput = { trigger: false, triggerPressed: false, aim: false, holdBreath: false, reload: false, mode: false, magCheck: false };
+    this.locked = false;
   }
 
   update(dt) {
@@ -32,6 +34,15 @@ export class PlayerController extends EventEmitter {
 
     // 시점 (즉각)
     const { dx, dy } = inp.consumeMouse();
+    if (this.locked) {
+      // 충격·사망: 입력을 버림 (마우스 이동량도 소비해 풀리는 순간 시점이 튀지 않게)
+      this.lookDeltaYaw = 0; this.lookDeltaPitch = 0;
+      const W = this.weaponInput;
+      W.aim = W.trigger = W.triggerPressed = W.holdBreath = W.reload = W.mode = W.magCheck = false;
+      m.input.move.x = 0; m.input.move.z = 0; m.input.sprint = false; m.input.jump = false; m.input.lean = 0;
+      if (m.restrictions.has('aiming')) m.clearRestriction('aiming');
+      return;
+    }
     const sens = CONFIG.camera.sensitivity * this.settings.get('sensitivity');
     const yaw0 = this.yaw, pitch0 = this.pitch;
     this.yaw -= dx * sens;

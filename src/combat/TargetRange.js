@@ -26,13 +26,19 @@
 //              지면 높이를 따라감 — 판정 캡슐도 바로 갱신) + 맞았을 때의 흔들림 스프링 (화면 표현만, TargetMesh 가 읽음).
 //  combat 'hit' 이 표적이면: 흔들림 충격 (탄 진행 방향, 높이 맞을수록 크게) + 로그 맨 앞에 추가 + 'log' {entry}.
 //   로그 글: '30m 서기 표적 · 가슴 상부(심장) · 30.2m · 0.045s · 관통 없음' / '… · 관통: 대나무' (같은 종류 여럿: '대나무 ×2')
-//  이벤트: 'state' {active, targets, bushes} (배치·제거), 'log' {entry}
+//   (3단계: 끝에 부상 결과 '· 치명(심장)' / '· 부상(동맥)' / '· 스침' — 로그는 F3 디버그에서만 보인다. 명중 표시 없음)
+//  3단계 사람 개체: query(실제 지형)가 있으면 표적마다 HumanEntity (HumanMotor + Injuries) — 맞으면 부위대로 쓰러지거나
+//   주저앉고 엄폐물로 기어가며, 출혈로 죽는다. 걷기도 이동 컴포넌트로. t.entity, t.injuries 로 상태를 읽는다.
+//   query 가 없으면(헤드리스 평지) 예전처럼 움직이지 않는 마네킹 (판정·로그만).
+//  이벤트: 'state' {active, targets, bushes} (배치·제거), 'log' {entry},
+//          'vocal' {target, kind, position} · 'bleed' {target, position, rate} · 'fall' {target, kind, dir} · 'death' {target, cause}
 // =====================================================================
 import { CONFIG } from '../config.js';
 import { EventEmitter } from '../core/EventEmitter.js';
 import { DEG, clamp, smoothstep, wrapAngle } from '../core/math.js';
 import { RNG } from '../core/rng.js';
 import { buildHitboxes, partLabel } from './Hitboxes.js';
+import { HumanEntity } from './HumanEntity.js';
 import { segCapsuleRaw } from './geom.js';
 
 // 자리 고르기 모양 상수 (몸 비율·여유 — 판정 수치가 아님)
@@ -126,7 +132,10 @@ export class TargetRange extends EventEmitter {
   /** 표적·수풀 제거 (사람 목록과 탄도 잎 목록에서도) */
   clear() {
     const world = this.combat?.world;
-    for (const t of this.targets) if (this.combat) this.combat.removePerson(t.person);
+    for (const t of this.targets) {
+      if (t.entity) t.entity.dispose();
+      else if (this.combat) this.combat.removePerson(t.person);
+    }
     if (world && Array.isArray(world.extraFoliage)) {
       for (const b of this.bushes) {
         const i = world.extraFoliage.indexOf(b);
@@ -154,7 +163,8 @@ export class TargetRange extends EventEmitter {
     if (!this.active) return;
     for (let i = 0; i < this.targets.length; i++) {
       const t = this.targets[i];
-      if (t.walk) this._walk(t, dt);
+      if (t.entity) this._entityStep(t, dt);
+      else if (t.walk) this._walk(t, dt);
       this._wobble(t, dt);
     }
   }
@@ -529,7 +539,21 @@ export class TargetRange extends EventEmitter {
       t.yaw = walkYaw(t);
       t.pose.yaw = t.yaw;
     }
-    t.person = this.combat.addPerson({ name: t.label, getPose: () => t.pose, suppression: null, data: { kind: 'target', target: t } });
+    if (this.query && typeof this.query.getGroundInfo === 'function') {
+      // 사람 개체: 이동 컴포넌트가 지면·걷기·자세를, 부상 컴포넌트가 피격 결과를 맡는다
+      const e = new HumanEntity(this.query, this.combat, {
+        x: s.x, z: s.z, y: s.y, yaw: t.yaw, stance: s.stance, name: t.label, arms: 'down',
+        rng: new RNG((this.rng.float() * 4294967296) >>> 0), data: { kind: 'target', target: t },
+        walk: t.walk ? { center: { x: s.x, z: s.z }, axis: { x: t.axis.x, z: t.axis.z }, min: t.walkMin, max: t.walkMax, dir: t.walkDir, faceYaw: t.faceYaw } : null,
+      });
+      t.entity = e;
+      t.person = e.person;
+      t.injuries = e.injuries;
+      for (const ev of ['vocal', 'bleed', 'fall', 'death']) e.on(ev, (x) => this.emit(ev, { ...x, target: t }));
+      this._syncEntity(t);
+    } else {
+      t.person = this.combat.addPerson({ name: t.label, getPose: () => t.pose, suppression: null, data: { kind: 'target', target: t } });
+    }
     this._byPerson.set(t.person, t);
     if (s.bush) {
       const b = { ...s.bush };
@@ -583,6 +607,22 @@ export class TargetRange extends EventEmitter {
     t.person.refresh();   // 이번 프레임 사격이 화면과 같은 자리를 맞히게 캡슐을 바로 갱신
   }
 
+  /** 사람 개체 한 프레임: 이동·부상 → 표적 필드(pos, yaw, stance, pose)를 개체에서 읽어 둔다 (TargetMesh·로그용) */
+  _entityStep(t, dt) {
+    t.entity.update(dt);
+    this._syncEntity(t);
+    t.person.refresh();   // 이번 프레임 사격이 화면과 같은 자리를 맞히게 캡슐을 바로 갱신
+  }
+
+  _syncEntity(t) {
+    const e = t.entity, m = e.motor;
+    t.pos.x = m.position.x; t.pos.y = m.position.y; t.pos.z = m.position.z;
+    t.yaw = m.yaw;
+    t.stance = m.stance;
+    t.pose = e.pose();
+    t.state = e.state;
+  }
+
   /** 끝에 닿음: 플레이어를 바라보는 쪽으로 돌아 반대 방향까지 (앞모습을 보이며 180°) */
   _startTurn(t) {
     const T = Math.max(0, CONFIG.testRange.walkTurnTime);
@@ -620,13 +660,16 @@ export class TargetRange extends EventEmitter {
     const t = this._byPerson.get(e.person);
     if (!t) return;
     t.hits++;
-    this._kick(t, e);
+    const w = e.wound ?? null;
+    if (!w || !w.alreadyDead) this._kick(t, e);
+    if (t.entity) t.entity.onHit(e);
     const pen = Array.isArray(e.penetrated) ? e.penetrated.slice() : [];
     const label = partLabel(e.part);
-    const text = `${t.label} · ${label} · ${(e.distance ?? 0).toFixed(1)}m · ${(e.timeOfFlight ?? 0).toFixed(3)}s · ${pen.length ? `관통: ${penetrationText(pen)}` : '관통 없음'}`;
+    const text = `${t.label} · ${label} · ${(e.distance ?? 0).toFixed(1)}m · ${(e.timeOfFlight ?? 0).toFixed(3)}s · ${pen.length ? `관통: ${penetrationText(pen)}` : '관통 없음'}${woundText(w)}`;
     const entry = {
       text, part: e.part, partLabel: label, distance: e.distance, tof: e.timeOfFlight, penetrated: pen, target: t, time: this.time,
       speed: e.speed, incidenceDeg: e.incidenceDeg, point: { x: e.point.x, y: e.point.y, z: e.point.z }, shooter: e.shooter ?? null,
+      wound: w,
     };
     this.log.unshift(entry);
     const max = Math.max(1, CONFIG.testRange.logSize | 0);
@@ -760,6 +803,16 @@ function segsCross2(a0, a1, b0, b1) {
 function cross2(o, a, b) { return (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x); }
 
 /** 관통한 물체 종류 → '대나무 ×2, 물' (처음 나온 순서) */
+/** 부상 결과 꼬리말 (F3 로그) */
+function woundText(w) {
+  if (!w) return '';
+  if (w.alreadyDead) return ' · (이미 사망)';
+  const J = CONFIG.injury;
+  if (w.severity === 'lethal') return ` · 치명(${J.causes[w.zone] ?? w.zone})`;
+  if (w.severity === 'graze') return ` · 스침${w.lowSpeed ? '(저속)' : ''}`;
+  return ` · 부상(${J.typeLabels[w.type] ?? w.type}${w.arterial ? '·동맥' : ''}${w.lowSpeed ? '·저속' : ''})`;
+}
+
 function penetrationText(types) {
   const labels = CONFIG.testRange.objectLabels ?? {};
   const counts = new Map();

@@ -2,6 +2,9 @@
 // 지침은 화면 가장자리 어두워짐(비네트)으로만 표현.
 // 2단계: 제압 터널 시야 (가장자리가 어둡고 흐려짐), 짧은 글 (탄창 확인 결과·사격 모드 — toast),
 //        F8 피격 로그 (오른쪽 위, 최신이 위 — 표적이 있을 때만), F7 제압 테스트 중 표시. 조준점·거치 아이콘은 없다.
+// 3단계: 체력 바·부상 아이콘·히트마커 없음. 맞은 순간 화면 충격(어두운 붉은 번쩍임), 의식이 흐려지면 검게 꺼짐(blackout),
+//        사망 화면 (원인·생존 시간·Enter 다시 시작), F9 피격 테스트 메뉴 (↑↓ 고르기, Enter 적용, F9 닫기).
+//        F8 피격 로그는 F3 디버그를 켰을 때만 보인다 (Game 이 결정).
 const ICONS = {
   stand: '<svg viewBox="0 0 24 40"><circle cx="12" cy="5" r="3.2"/><path d="M8 11h8l1.5 13h-3l-.8 14h-3.4l-.8-14h-3z"/></svg>',
   crouch: '<svg viewBox="0 0 24 40"><circle cx="11" cy="15" r="3.2"/><path d="M7 20h8l3 7-3 2-1 9h-3.5l.5-8-5-2z"/></svg>',
@@ -18,17 +21,28 @@ export class HUD {
       <div id="tunnel"></div>
       <div id="sink-shade"></div>
       <div id="stance-icon"><div class="icon"></div><div class="quiet-dot" title="조용히 걷기"></div></div>
-      <div id="restrict-flag">거동 불능 시뮬레이션 (F6)</div>
       <div id="corner-tr"><div id="hitlog"><div class="title">피격 로그 (F8)</div><div class="lines"></div></div>
         <div id="f7hint">제압 테스트 중 (F7로 중지)</div></div>
       <div id="toast"></div>
+      <div id="hitflash"></div>
+      <div id="blackout"></div>
+      <div id="hittest"><div class="title">피격 테스트 (F9) — ↑↓ 고르기 · Enter 맞기 · F9 닫기</div><div class="items"></div></div>
+      <div id="death"><div class="box"><div class="dead">사망</div><div class="cause"></div><div class="time"></div>
+        <div class="again">Enter — 다시 시작</div></div></div>
     `);
+    this.hitflashEl = root.querySelector('#hitflash');
+    this.blackoutEl = root.querySelector('#blackout');
+    this.hittestEl = root.querySelector('#hittest');
+    this.hittestItems = root.querySelector('#hittest .items');
+    this.deathEl = root.querySelector('#death');
+    this._flash = 0;
+    this._flashShown = -1;
+    this._blackShown = -1;
     this.vignette = root.querySelector('#vignette');
     this.tunnelEl = root.querySelector('#tunnel');
     this.sinkShade = root.querySelector('#sink-shade');
     this.stanceEl = root.querySelector('#stance-icon .icon');
     this.quietDot = root.querySelector('#stance-icon .quiet-dot');
-    this.restrictFlag = root.querySelector('#restrict-flag');
     this.hitlogEl = root.querySelector('#hitlog');
     this.hitlogLines = root.querySelector('#hitlog .lines');
     this.f7El = root.querySelector('#f7hint');
@@ -55,6 +69,37 @@ export class HUD {
       : '<div class="empty">아직 명중 없음</div>';
   }
 
+  /** 맞은 순간 화면 충격 (0~1.5) */
+  hitFlash(strength = 1) {
+    this._flash = Math.min(1.2, Math.max(this._flash, strength));
+  }
+
+  /** 화면이 검게 꺼짐 0~1 (의식 상실·사망) */
+  setBlackout(a) {
+    const v = Math.max(0, Math.min(1, a));
+    if (Math.abs(v - this._blackShown) < 0.004) return;
+    this._blackShown = v;
+    this.blackoutEl.style.display = v > 0 ? 'block' : 'none';
+    this.blackoutEl.style.opacity = v.toFixed(3);
+  }
+
+  /** 사망 화면 ({cause, time (s)}) — null 이면 숨김 */
+  setDeath(info) {
+    if (!info) { this.deathEl.style.display = 'none'; return; }
+    const t = Math.max(0, info.time || 0);
+    const mm = Math.floor(t / 60), ss = Math.floor(t % 60);
+    this.deathEl.querySelector('.cause').textContent = `사인: ${info.cause}`;
+    this.deathEl.querySelector('.time').textContent = `생존 시간 ${mm}분 ${String(ss).padStart(2, '0')}초`;
+    this.deathEl.style.display = 'flex';
+  }
+
+  /** F9 메뉴 — items [{label}], index 선택. null 이면 닫음 */
+  setHitTest(items, index = 0) {
+    if (!items) { this.hittestEl.style.display = 'none'; return; }
+    this.hittestEl.style.display = 'block';
+    this.hittestItems.innerHTML = items.map((it, i) => `<div class="${i === index ? 'sel' : ''}">${i === index ? '▶ ' : '&nbsp;&nbsp;'}${esc(it.label)}</div>`).join('');
+  }
+
   setF7(active) {
     this.f7El.style.display = active ? 'block' : 'none';
   }
@@ -66,7 +111,6 @@ export class HUD {
       this.stanceEl.className = `icon ${motor.stance}`;
     }
     this.quietDot.style.opacity = quiet ? '1' : '0';
-    this.restrictFlag.style.display = motor.hasRestriction('incapacitated') ? 'block' : 'none';
 
     // 지침 비네트: 스태미나가 줄수록 가장자리가 어두워지고, 탈진 시 심장 박동에 맞춰 조여옴
     const fatigue = 1 - motor.stamina / 100;
@@ -96,6 +140,14 @@ export class HUD {
 
     // 깊이 빠졌을 때 시야 아래쪽이 살짝 어두워짐
     this.sinkShade.style.opacity = Math.min(0.6, motor.sink * 1.2).toFixed(3);
+
+    // 맞은 순간 화면 충격 — 빠르게 사라짐
+    if (this._flash > 0) this._flash = Math.max(0, this._flash - dt * 2.2);
+    if (Math.abs(this._flash - this._flashShown) > 0.004) {
+      this._flashShown = this._flash;
+      this.hitflashEl.style.display = this._flash > 0 ? 'block' : 'none';
+      this.hitflashEl.style.opacity = Math.min(1, this._flash).toFixed(3);
+    }
 
     if (this._toastTimer > 0) {
       this._toastTimer -= dt;

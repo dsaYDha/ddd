@@ -7,6 +7,8 @@
 //
 //  입력:  update(dt, { trigger, triggerPressed, reload, mode, magCheck, canFire })
 //         trigger = 누르고 있음, 나머지는 이번 프레임에 눌림(모서리). triggerPressed 가 없으면 trigger 변화로 판단.
+//  외부 (3단계 팔 부상 — 사람 상태가 정함, reset 해도 유지): actionTimeMul (재장전·탄창 확인·고장 해결 시간 배율),
+//         fireDelay (방아쇠를 누른 뒤 발사까지 s — 누를 때 한 번 예약, 놓아도 나감), setAutoBlocked(on) (연발 불가 → 단발)
 //  읽기:  mode, chambered, malfunctioned, fouling, mags[{rounds}], magIndex, magRounds, totalRounds, state, busy,
 //         action {kind, t, duration, timeline} (화면 모델 애니메이션), burstIndex, shotsFired, lastShotTime, weightKg
 //  이벤트: 'shot' {burstIndex, timeOffset, mode, tracer, shotIndex, time}
@@ -77,6 +79,9 @@ export class Weapon extends EventEmitter {
     this.mags = [];
     this.state = 'ready';
     this.action = null;
+    this.actionTimeMul = 1;
+    this.fireDelay = 0;
+    this.autoBlocked = false;
     this.reset();
   }
 
@@ -140,12 +145,32 @@ export class Weapon extends EventEmitter {
     if (wasReady && (this._armed || this._pending) && held && this._held && !pressed && canFire && !this.malfunctioned) {
       this._fireWithin(t0);
     }
+    // 2b) 지연 발사 (부상으로 방아쇠가 굼뜸): 누를 때 예약한 시각이 이 구간 안이면 발사. 막히면 취소
+    if (this._delayAt !== null) {
+      if (!wasReady || !canFire || this.malfunctioned) this._delayAt = null;
+      else if (this._delayAt <= this.time + EPS) {
+        const ts = this._delayAt > t0 ? this._delayAt : t0;
+        this._delayAt = null;
+        this._attempt(ts);
+      }
+    }
 
     // 3) 이번 표본의 입력 모서리 — 구간 끝에 적용
     if (input.mode) this._onModeKey();
     if (input.reload) this._onReloadKey();
     if (input.magCheck) this._onMagCheckKey();
     this._onTrigger(held, pressed, canFire);
+  }
+
+  /** 연발 불가 (방아쇠 팔 부상) — 켜지면 연발이던 모드를 단발로 */
+  setAutoBlocked(on) {
+    on = !!on;
+    if (on === this.autoBlocked) return;
+    this.autoBlocked = on;
+    if (on && this.mode === 'auto') {
+      const m = this._modes();
+      this.setMode(m.includes('semi') ? 'semi' : m[0]);
+    }
   }
 
   /** 사격 모드 직접 지정 (AI·디버그용 — B 키와 달리 상태를 가리지 않는다). 바뀌면 true */
@@ -216,6 +241,7 @@ export class Weapon extends EventEmitter {
     this._held = false;               // 직전 표본에서 방아쇠를 쥐고 있었나
     this._armed = false;              // 연발: 쥐고 있는 동안 다음 사이클마다 발사
     this._pending = false;            // 노리쇠가 닫히길 기다리는 누름
+    this._delayAt = null;             // 지연 발사 예약 시각 (fireDelay)
     this._nextMag = -1;               // 재장전 중 끼울 탄창
     this._steps = [];
     this._stepIndex = 0;
@@ -236,6 +262,9 @@ export class Weapon extends EventEmitter {
       if (!blocked) {
         if (this.malfunctioned) {
           this._dryFire('malfunction', 0);
+        } else if (this.fireDelay > 0) {
+          // 부상으로 굼뜬 방아쇠: 한 발만, fireDelay 뒤 (노리쇠가 돌아오는 중이면 그 뒤) — 연사 없음
+          if (this._delayAt === null) this._delayAt = Math.max(this.time + this.fireDelay, this.lastShotTime + this.cycleTime);
         } else if (this.lastShotTime + this.cycleTime > this.time + EPS) {
           // 노리쇠가 아직 돌아오는 중: 닫히는 순간 발사 (그때도 쥐고 있을 때만 — 짧게 톡 친 건 사라진다)
           this._pending = held;
@@ -374,7 +403,8 @@ export class Weapon extends EventEmitter {
   _startAction(kind) {
     const spec = ACTIONS[kind];
     const R = this.data.reload || {};
-    const duration = Math.max(0, R[spec.time] || 0);
+    const mul = Number.isFinite(this.actionTimeMul) && this.actionTimeMul > 0 ? this.actionTimeMul : 1;
+    const duration = Math.max(0, R[spec.time] || 0) * mul;
     const timeline = spec.timeline ? R[spec.timeline] || null : null;
     // 진행표: config 비율 → 시각. 빠진 값은 동작 끝, 순서가 뒤집힌 값은 앞 단계 시각으로 (빼기 전에 끼우는 일이 없게)
     this._steps = [];
@@ -461,6 +491,11 @@ export class Weapon extends EventEmitter {
 
   _modes() {
     const m = this.data.modes;
-    return m && m.length ? m : DEFAULT_MODES;
+    const list = m && m.length ? m : DEFAULT_MODES;
+    if (this.autoBlocked && list.includes('auto')) {
+      const f = list.filter((x) => x !== 'auto');
+      return f.length ? f : DEFAULT_MODES;
+    }
+    return list;
   }
 }

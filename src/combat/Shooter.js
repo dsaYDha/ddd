@@ -14,6 +14,8 @@
 //          'boltPull','boltRelease','reloadEnd','magCheckStart','magCheckResult','clearStart','clearEnd','modeChange',
 //          'stateChange','noMags','noise' …), AimModel 의 'holdBreath', 그리고 발마다
 //          'fired' {origin, dir, ads, burstIndex, projectile, timeOffset, tracer, mode}.
+//  blocked (3단계): null 이 아니면 (예: 'dropped' 총을 떨어뜨림, 'aid' 처치 중, 'stun' 충격, 'dead') 조준·사격·재장전 입력을
+//          모두 무시한다 — 흔들림·관성 모델은 계속 돈다. 부상 배율은 aim.setExternal('injury', …)·weapon.actionTimeMul 등으로.
 //  화면 모델(WeaponView)은 카메라가 움직인 뒤 refreshSight(카메라 위치, yaw, pitch) 를 불러 sight·muzzle 을 다시 맞춘다.
 //  rest = 이번 프레임 거치 감지 {rested, kind, object, gap, drop} (지연을 거친 실제 거치 상태는 aim.rested·restBlend).
 //  게임 루프 순서: CombatSystem.update(dt) 를 먼저, 그다음 Shooter.update — 발사한 탄은 'shot'.timeOffset 만큼 미리 진행되어
@@ -62,6 +64,7 @@ export class Shooter extends EventEmitter {
     this._weaponIn = { trigger: false, triggerPressed: false, reload: false, mode: false, magCheck: false, canFire: true };
     this._look = v3();
     this._fx = {};
+    this.blocked = null;
 
     // 무기 이벤트를 같은 이름·payload 로 다시 보낸다. EventEmitter 에 와일드카드가 없어 무기의 emit 을 감싼다
     // → 무기에 새 이벤트가 생겨도 여기를 고칠 필요가 없다. 무기 자신의 구독자(아래 'shot' 발사)가 먼저 불린다.
@@ -89,7 +92,8 @@ export class Shooter extends EventEmitter {
     const I = input || NO_INPUT;
     this.pose = P;
     const sprinting = !!P.sprinting;
-    const aimHeld = !!I.aim && !this.weapon.busy && !sprinting;
+    const blocked = !!this.blocked;
+    const aimHeld = !!I.aim && !this.weapon.busy && !sprinting && !blocked;
     const speed = P.speed > 0 ? P.speed : 0;
 
     // 거치 감지 (조준 중에만)
@@ -127,12 +131,12 @@ export class Shooter extends EventEmitter {
 
     // 무기 (발사는 'shot' 이벤트 → _onShot)
     const w = this._weaponIn;
-    w.trigger = !!I.trigger;
-    w.triggerPressed = !!I.triggerPressed;
-    w.reload = !!I.reload;
-    w.mode = !!I.mode;
-    w.magCheck = !!I.magCheck;
-    w.canFire = this.aim.canFire && !sprinting;
+    w.trigger = !blocked && !!I.trigger;
+    w.triggerPressed = !blocked && !!I.triggerPressed;
+    w.reload = !blocked && !!I.reload;
+    w.mode = !blocked && !!I.mode;
+    w.magCheck = !blocked && !!I.magCheck;
+    w.canFire = this.aim.canFire && !sprinting && !blocked;
     this.weapon.update(dt, w);
     return kick;
   }

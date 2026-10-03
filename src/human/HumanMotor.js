@@ -7,8 +7,10 @@
 //  출력:  position(발 위치), eyeHeight, stamina, heartRate, breath, surface, sink, ...
 //  외부 입력: loadKg (장비 무게), stress (0~1 외부 긴장 — 제압. 목표 심박에 heart.stressWeight 비율로 더해짐)
 //  이벤트: 'footstep' | 'land' | 'suction' | 'stance' | 'slide' | 'exhausted' | 'recovered'
-//  외부 제한: setRestriction(name, {canStand, canCrouch, canProne, canSprint, canJump, maxSpeedMultiplier})
-//            (3단계: 총상으로 거동 불능이 될 때 사용)
+//  외부 제한: setRestriction(name, {canStand, canCrouch, canProne, canSprint, canJump, maxSpeedMultiplier,
+//                                    maxSpeed (m/s — 숫자 또는 {stand, crouch, prone}), maxStamina})
+//            (3단계: 총상으로 거동 불능이 될 때 사용 — 여러 이름이면 가장 엄격한 값)
+//            forceStance(stance, duration) — 총에 맞아 넘어지는 등 전환 중이어도 바로 그 자세로
 // =====================================================================
 import { CONFIG } from '../config.js';
 import { EventEmitter } from '../core/EventEmitter.js';
@@ -19,6 +21,7 @@ export const STANCES = ['stand', 'crouch', 'prone'];
 
 const DEFAULT_CAPS = Object.freeze({
   canStand: true, canCrouch: true, canProne: true, canSprint: true, canJump: true, maxSpeedMultiplier: 1,
+  maxSpeed: Object.freeze({ stand: Infinity, crouch: Infinity, prone: Infinity }), maxStamina: Infinity,
 });
 
 export class HumanMotor extends EventEmitter {
@@ -132,15 +135,37 @@ export class HumanMotor extends EventEmitter {
   }
 
   _recomputeCaps() {
-    const c = { ...DEFAULT_CAPS };
+    const c = { ...DEFAULT_CAPS, maxSpeed: { ...DEFAULT_CAPS.maxSpeed } };
     for (const r of this.restrictions.values()) {
       for (const k of ['canStand', 'canCrouch', 'canProne', 'canSprint', 'canJump']) {
         if (r[k] === false) c[k] = false;
       }
       if (r.maxSpeedMultiplier !== undefined) c.maxSpeedMultiplier = Math.min(c.maxSpeedMultiplier, r.maxSpeedMultiplier);
+      const ms = r.maxSpeed;
+      if (typeof ms === 'number') {
+        for (const st of STANCES) c.maxSpeed[st] = Math.min(c.maxSpeed[st], ms);
+      } else if (ms) {
+        for (const st of STANCES) if (Number.isFinite(ms[st])) c.maxSpeed[st] = Math.min(c.maxSpeed[st], ms[st]);
+      }
+      if (Number.isFinite(r.maxStamina)) c.maxStamina = Math.min(c.maxStamina, r.maxStamina);
     }
     if (!c.canStand && !c.canCrouch) c.canProne = true; // 최소한 기어갈 수는 있게
     this.caps = c;
+  }
+
+  /**
+   * 강제 자세 (총에 맞아 넘어짐 등): 전환 중이어도 지금 보이는 자세에서 바로 target 으로, duration 초.
+   * 제한·지형 검사 없이 (넘어지는 건 막을 수 없다) — 이후 _enforceStance 가 허용 자세를 지킨다.
+   */
+  forceStance(target, duration = 0.4) {
+    if (!STANCES.includes(target)) return false;
+    if (this.stance === target && this.stanceProgress >= 1) return false;
+    const visible = this.stanceProgress < 0.5 ? this.stanceFrom : this.stance;
+    this.stance = visible;
+    this.stanceProgress = 1;
+    if (visible === target) return false;
+    this._beginStance(target, duration);
+    return true;
   }
 
   /** 자세 변경 요청. 불가능하면 false */
@@ -286,8 +311,10 @@ export class HumanMotor extends EventEmitter {
       if (this.stamina < C.movement.lowStaminaThreshold) {
         speed *= lerp(C.movement.lowStaminaSpeedMul, 1, this.stamina / C.movement.lowStaminaThreshold);
       }
-      // 외부 제한 (부상 등)
+      // 외부 제한 (부상 등): 배율, 그리고 자세별 최대 속도 (기어가기 0.15m/s 같은 절대값)
       speed *= caps.maxSpeedMultiplier;
+      const capV = caps.maxSpeed[stance];
+      if (speed > capV) speed = capV;
       // 자세 전환 중
       if (this.transitioning) speed *= C.stance.moveMulDuringTransition;
       // 진흙에서 발 빼는 중
@@ -660,7 +687,7 @@ export class HumanMotor extends EventEmitter {
     if (this.sliding) drain += S.slipStruggleDrain;
     this.drainRate = drain;
     this.regenRate = regen;
-    this.stamina = clamp(this.stamina + (regen - drain) * dt, 0, S.max);
+    this.stamina = clamp(this.stamina + (regen - drain) * dt, 0, Math.min(S.max, this.caps.maxStamina));
 
     if (!this.exhausted && this.stamina <= 0) {
       this.exhausted = true;

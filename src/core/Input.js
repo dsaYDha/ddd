@@ -3,8 +3,8 @@
 //  포인터 잠금 중(또는 끌어서 보기 중)에만 받는다 — 메뉴를 누른 클릭이 사격으로 새지 않게.
 import { EventEmitter } from './EventEmitter.js';
 
-// F7 = 일부 브라우저의 '캐럿 탐색' 토글, F3 = 찾기 — 게임 키로 쓰므로 막는다
-const PREVENT = new Set(['Space', 'F3', 'F6', 'F7', 'F8', 'Tab', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown']);
+// F7 = 일부 브라우저의 '캐럿 탐색' 토글, F3 = 찾기 — 게임 키로 쓰므로 막는다 (3단계: F9 피격 테스트)
+const PREVENT = new Set(['Space', 'F3', 'F6', 'F7', 'F8', 'F9', 'Tab', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown']);
 
 export class Input extends EventEmitter {
   constructor(element) {

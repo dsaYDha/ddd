@@ -2,6 +2,9 @@
 //  2단계: 가늠자 조준(ads 0~1) 중에는 걸음·호흡·진흙 기우뚱을 (1 − 0.8·ads) 로 줄이고 시야각 × aim.adsFovMul (확대 아님),
 //         근접 통과 움찔(addShake — 가까울수록 크게, 약 0.3초), 제압 미세 떨림(tremorDeg), 발사 순간의 짧은 화면 튐(punch, 약 0.15초).
 //         반동으로 '남는' 시선 변화는 PlayerController 의 yaw/pitch 에 이미 들어 있다 (여기 것은 잠깐 보이는 흔들림뿐).
+//  3단계: impact(옆, 뒤, 세기) — 총에 맞은 강한 충격 (맞은 방향으로 머리가 젖혀졌다 돌아옴, 약 0.8초),
+//         knockdown() — 넘어지며 땅으로 떨어지는 굴림, downed (Game 이 채움) — 쓰러져 있는 동안 기운 채,
+//         death 0~1 (Game 이 채움) — 시점이 땅에 떨어져 옆으로 누움.
 import * as THREE from 'three';
 import { CONFIG } from '../config.js';
 import { clamp, lerp } from '../core/math.js';
@@ -36,6 +39,15 @@ export class CameraRig {
     this._punch = 0;             // 발사 튐 (rad, 위)
     this._punchRoll = 0;
     this._right = new THREE.Vector3();
+    // 3단계 피격
+    this._imp = { p: 0, y: 0, r: 0, vp: 0, vy: 0, vr: 0 };   // 충격 스프링 (rad)
+    this._knock = 0;             // 넘어짐 굴림 (rad, 감쇠)
+    this._knockSide = 1;
+    this.downed = false;         // 쓰러져 있음 → 기운 시점
+    this._downRoll = 0;
+    this.death = 0;              // 0~1 죽어서 쓰러짐
+    this.deathSide = 1;
+    this.groundY = null;         // 죽음 시점이 내려갈 땅 높이 (Game 이 채움)
     motor.on('land', (e) => { this.dipVel -= Math.min(1.6, e.speed * 0.35) * CONFIG.camera.landingDip * 10; });
     motor.on('suction', (e) => { this.dipVel -= 0.25 * e.intensity; });
   }
@@ -46,6 +58,32 @@ export class CameraRig {
     if (a <= this._shake) return;
     this._shake = a;
     for (let i = 0; i < 3; i++) this._shakePh[i] = Math.random() * Math.PI * 2;
+  }
+
+  /**
+   * 총에 맞은 충격: side (+ 오른쪽에서 맞음), back (+ 앞에서 맞아 뒤로 밀림), strength 0~1.5.
+   * 머리가 맞은 방향 반대로 확 젖혀졌다가 스프링으로 돌아옴 + 움찔.
+   */
+  impact(side, back, strength = 1) {
+    const I = this._imp, k = Math.max(0, strength);
+    I.vp += (0.6 + 0.6 * back) * 0.9 * k;            // 위로 젖혀짐
+    I.vy += -side * 0.9 * k + (Math.random() - 0.5) * 0.6 * k;
+    I.vr += (side * 1.1 + (Math.random() - 0.5) * 0.8) * k;
+    this.addShake(2.2 * k);
+  }
+
+  /** 넘어짐: 시점이 옆으로 굴러 땅으로 떨어짐 (감쇠, 쓰러진 기울기는 downed 가 유지) */
+  knockdown(side = Math.random() < 0.5 ? -1 : 1) {
+    this._knockSide = side;
+    this._knock = 0.55;
+    this.dipVel -= 1.2;
+  }
+
+  /** 다시 시작: 피격 표현 초기화 */
+  resetInjury() {
+    const I = this._imp;
+    I.p = I.y = I.r = I.vp = I.vy = I.vr = 0;
+    this._knock = 0; this._downRoll = 0; this.downed = false; this.death = 0;
   }
 
   /** 발사 순간 화면이 짧게 튐 (°) */
@@ -125,6 +163,20 @@ export class CameraRig {
     this._punch *= pk;
     this._punchRoll *= pk;
 
+    // 3단계: 피격 충격 스프링 (약간 덜 감쇠 — 휘청) + 넘어짐 굴림 + 쓰러진 기울기 + 죽음
+    const I = this._imp, kw = 9, kz = 0.55;
+    for (const [a, v] of [['p', 'vp'], ['y', 'vy'], ['r', 'vr']]) {
+      I[v] += (-kw * kw * I[a] - 2 * kz * kw * I[v]) * dt;
+      I[a] += I[v] * dt;
+    }
+    this._knock *= Math.exp(-dt / 0.45);
+    const downTarget = this.downed ? 0.11 * this._knockSide : 0;
+    this._downRoll += (downTarget - this._downRoll) * (1 - Math.exp(-2.5 * dt));
+    const dk = clamp(this.death, 0, 1);
+    const deathRoll = dk * 1.35 * this.deathSide, deathPitch = -dk * 0.35;
+    let deathDrop = 0;
+    if (dk > 0 && Number.isFinite(this.groundY)) deathDrop = Math.max(0, (this.eyeY - (this.groundY + 0.12)) * dk);
+
     // 기울이기
     this.leanSmooth = m.leanOffset;
     const right = this._right.set(Math.cos(yaw), 0, -Math.sin(yaw));
@@ -132,13 +184,13 @@ export class CameraRig {
     const cam = this.camera;
     cam.position.set(
       m.position.x + right.x * (this.leanSmooth + bobL),
-      this.eyeY + bobV + breathV + this.dip - Math.abs(m.leanOffset) * 0.06,
+      this.eyeY + bobV + breathV + this.dip - Math.abs(m.leanOffset) * 0.06 - deathDrop,
       m.position.z + right.z * (this.leanSmooth + bobL),
     );
     cam.rotation.set(
-      pitch + breathPitch + lurchPitch + shP + punchP,
-      yaw + breathYaw + shY,
-      -m.leanRoll - bobR - lurchRoll + shR + punchR,
+      pitch * (1 - dk) + breathPitch + lurchPitch + shP + punchP + I.p + deathPitch,
+      yaw + breathYaw + shY + I.y,
+      -m.leanRoll - bobR - lurchRoll + shR + punchR + I.r + this._knock * this._knockSide + this._downRoll + deathRoll,
     );
 
     // 시야각: 조준하면 살짝 좁힘 (스코프 없음 — 확대가 아니라 집중)

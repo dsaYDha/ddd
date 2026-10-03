@@ -1,6 +1,7 @@
 // 전투에 참여하는 '사람' (플레이어·F8 표적·4단계 적 병사) — 순수 로직.
 //  Person: 자세를 알려주는 getPose() 하나만 있으면 된다. refresh() 때 부위별 캡슐(Hitboxes)과 경계 구를 다시 만든다.
 //  제압(Suppression)은 사람마다 하나씩 붙는 공용 컴포넌트 — 플레이어와 적이 같은 규칙으로 겁을 먹는다.
+//  부상(Injuries, 3단계)도 사람마다 하나 (선택) — CombatSystem 이 명중·스침을 여기로 보낸다.
 //  People: 목록 + 근처 사람 찾기 (근처 착탄 제압 판정용: 거리 = 머리·몸통 캡슐 '표면'까지).
 import { EventEmitter } from '../core/EventEmitter.js';
 import { buildHitboxes, hitboxBounds } from './Hitboxes.js';
@@ -11,12 +12,12 @@ let nextId = 1;
 export class Person extends EventEmitter {
   /**
    * @param {{ name?: string, isPlayer?: boolean, getPose: () => object|null, suppression?: Suppression|null,
-   *           noiseSource?: object, data?: object }} opts
+   *           noiseSource?: object, data?: object, injuries?: import('./Injuries.js').Injuries|null }} opts
    *  getPose: Hitboxes 의 pose ({x,y,z,yaw,stance,stanceFrom,stanceProgress,lean,arms,...}) — null 이면 판정 없음
    *  suppression: 생략하면 new Suppression(this), null 이면 제압 없음
    *  noiseSource: 소음 이벤트의 발생 주체 (플레이어는 HumanMotor) — 없으면 Person 자신
    */
-  constructor({ name, isPlayer = false, getPose, suppression, noiseSource = null, data = {} } = {}) {
+  constructor({ name, isPlayer = false, getPose, suppression, noiseSource = null, data = {}, injuries = null } = {}) {
     super();
     this.id = nextId++;
     this.name = name ?? `사람${this.id}`;
@@ -25,6 +26,7 @@ export class Person extends EventEmitter {
     this.suppression = suppression === undefined ? new Suppression(this) : suppression;
     this.noiseSource = noiseSource;
     this.data = data;
+    this.injuries = injuries;
     this.hitboxes = [];
     this.bounds = { center: { x: 0, y: 0, z: 0 }, radius: -1 };
     this.pose = null;

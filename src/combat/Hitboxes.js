@@ -12,7 +12,9 @@
 //  기울이기(lean): 머리 1 · 가슴 약 0.7 · 복부 약 0.35 비율로 옆으로 이동 (카메라처럼 살짝 낮아짐).
 //
 //  pose 확장(선택): bodyPitch (rad, 엎드린 몸이 경사를 따라 앞쪽이 들리는 각 — 엎드리기 비율만큼 적용),
-//                   eyeHeight (m, 실제 눈높이 — 물에서 머리를 드는 등 표 값과 다르면 상체를 그만큼 올림)
+//                   eyeHeight (m, 실제 눈높이 — 물에서 머리를 드는 등 표 값과 다르면 상체를 그만큼 올림),
+//                   fall {ax, az, angle, lift} (3단계: 쓰러진 몸 — 발을 축으로 수평축 (ax, 0, az) 둘레 angle rad 회전 후
+//                   lift m 올림. TargetMesh 가 같은 회전을 메시에 건다 → 쓰러진 시체의 판정 = 보이는 모습)
 //  반환 배열 확장: out.eye (월드 눈 위치), out.chest (가슴 상부 중심) — 조준·시야 판정용
 import { CONFIG } from '../config.js';
 import { smoothstep } from '../core/math.js';
@@ -288,9 +290,26 @@ export function buildHitboxes(pose, out = []) {
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   // up' = up·cos - fwd·sin, fwd' = fwd·cos + up·sin
   XF[0] = pose.x; XF[1] = pose.y; XF[2] = pose.z;
-  XF[3] = rx; XF[4] = rz;
-  XF[5] = -fx * sp; XF[6] = cp; XF[7] = -fz * sp;
-  XF[8] = fx * cp; XF[9] = sp; XF[10] = fz * cp;
+  XF[3] = rx; XF[4] = 0; XF[5] = rz;
+  XF[6] = -fx * sp; XF[7] = cp; XF[8] = -fz * sp;
+  XF[9] = fx * cp; XF[10] = sp; XF[11] = fz * cp;
+  const fall = pose.fall;
+  if (fall && fall.angle) {
+    // Rodrigues: v' = v cos + (k × v) sin + k (k·v)(1 − cos), k = 수평 단위축
+    let kx = fall.ax, kz = fall.az;
+    const kl = Math.hypot(kx, kz) || 1;
+    kx /= kl; kz /= kl;
+    const c = Math.cos(fall.angle), s = Math.sin(fall.angle);
+    for (let i = 3; i < 12; i += 3) {
+      const vx = XF[i], vy = XF[i + 1], vz = XF[i + 2];
+      const kv = kx * vx + kz * vz;
+      // k × v = (ky vz − kz vy, kz vx − kx vz, kx vy − ky vx), ky = 0
+      XF[i] = vx * c + (-kz * vy) * s + kx * kv * (1 - c);
+      XF[i + 1] = vy * c + (kz * vx - kx * vz) * s;
+      XF[i + 2] = vz * c + (kx * vy) * s + kz * kv * (1 - c);
+    }
+    XF[1] += fall.lift || 0;
+  }
 
   let n = 0;
   for (let c = 0; c < CAPS.length; c++) {
@@ -306,7 +325,7 @@ export function buildHitboxes(pose, out = []) {
       toWorld(W[ia * 3] + off, W[ia * 3 + 1], W[ia * 3 + 2], cap.a);
       toWorld(W[ib * 3] + off, W[ib * 3 + 1], W[ib * 3 + 2], cap.b);
       // 몸통 쌍 캡슐: 부위 중심선에서 이 캡슐 축까지의 옆 방향 변위 (월드) — hitNormal 이 타원 단면 법선을 구할 때 씀
-      cap.off.x = XF[3] * off; cap.off.y = 0; cap.off.z = XF[4] * off;
+      cap.off.x = XF[3] * off; cap.off.y = XF[4] * off; cap.off.z = XF[5] * off;
       n++;
       if (!spread) break;
     }
@@ -315,15 +334,51 @@ export function buildHitboxes(pose, out = []) {
   toWorld(W[EYE * 3], W[EYE * 3 + 1], W[EYE * 3 + 2], out.eye || (out.eye = { x: 0, y: 0, z: 0 }));
   toWorld((W[CHEST_A * 3] + W[CHEST_B * 3]) / 2, (W[CHEST_A * 3 + 1] + W[CHEST_B * 3 + 1]) / 2,
     (W[CHEST_A * 3 + 2] + W[CHEST_B * 3 + 2]) / 2, out.chest || (out.chest = { x: 0, y: 0, z: 0 }));
+  vitalZones(out);
   return out;
 }
 
-// 국소 → 월드 변환 계수: [원점 x,y,z, right x,z, up' x,y,z, fwd' x,y,z]
-const XF = new Float64Array(11);
+/**
+ * 3단계 치명 부위 (가슴 상부 캡슐 안): out.heart (심장·대혈관 구 중심), out.spineA→spineB (상부 척추 선, 위→아래),
+ * out.torsoUp (몸통 축 위 방향), out.torsoFwd (가슴이 향한 방향) — 모두 월드. 반경은 CONFIG.injury.
+ * 국소 몸통 축 u = 가슴 캡슐 아래→위, 앞 f = z 축에서 u 성분을 뺀 방향 (숙이거나 엎드리면 아래를 향함).
+ */
+function vitalZones(out) {
+  const J = CONFIG.injury;
+  const ax = W[CHEST_A * 3], ay = W[CHEST_A * 3 + 1], az = W[CHEST_A * 3 + 2];
+  let ux = W[CHEST_B * 3] - ax, uy = W[CHEST_B * 3 + 1] - ay, uz = W[CHEST_B * 3 + 2] - az;
+  let l = Math.hypot(ux, uy, uz) || 1;
+  ux /= l; uy /= l; uz /= l;
+  let fx = -uz * ux, fy = -uz * uy, fz = 1 - uz * uz;          // z − (z·u)u
+  l = Math.hypot(fx, fy, fz) || 1;
+  fx /= l; fy /= l; fz /= l;
+  const mx = (ax + W[CHEST_B * 3]) / 2, my = (ay + W[CHEST_B * 3 + 1]) / 2, mz = (az + W[CHEST_B * 3 + 2]) / 2;
+  const H = J.heartOffset;
+  toWorld(mx + fx * H.forward + ux * H.up - H.left, my + fy * H.forward + uy * H.up, mz + fz * H.forward + uz * H.up,
+    out.heart || (out.heart = { x: 0, y: 0, z: 0 }));
+  // 척추 위 끝: 목 아래 끝(NECK_A) 높이를 몸통 축에 투영, 등 쪽으로 back
+  const S = J.spine;
+  const h = (W[NECK_A * 3] - mx) * ux + (W[NECK_A * 3 + 1] - my) * uy + (W[NECK_A * 3 + 2] - mz) * uz;
+  const tx = mx + ux * h - fx * S.back, ty = my + uy * h - fy * S.back, tz = mz + uz * h - fz * S.back;
+  toWorld(tx, ty, tz, out.spineA || (out.spineA = { x: 0, y: 0, z: 0 }));
+  toWorld(tx - ux * S.length, ty - uy * S.length, tz - uz * S.length, out.spineB || (out.spineB = { x: 0, y: 0, z: 0 }));
+  // 방향 (원점 이동 없이 회전만)
+  dirToWorld(ux, uy, uz, out.torsoUp || (out.torsoUp = { x: 0, y: 0, z: 0 }));
+  dirToWorld(fx, fy, fz, out.torsoFwd || (out.torsoFwd = { x: 0, y: 0, z: 0 }));
+}
+
+// 국소 → 월드 변환 계수: [원점 x,y,z, right x,y,z, up' x,y,z, fwd' x,y,z]
+const XF = new Float64Array(12);
 function toWorld(lx, ly, lz, o) {
-  o.x = XF[0] + XF[3] * lx + XF[5] * ly + XF[8] * lz;
-  o.y = XF[1] + XF[6] * ly + XF[9] * lz;
-  o.z = XF[2] + XF[4] * lx + XF[7] * ly + XF[10] * lz;
+  o.x = XF[0] + XF[3] * lx + XF[6] * ly + XF[9] * lz;
+  o.y = XF[1] + XF[4] * lx + XF[7] * ly + XF[10] * lz;
+  o.z = XF[2] + XF[5] * lx + XF[8] * ly + XF[11] * lz;
+  return o;
+}
+function dirToWorld(lx, ly, lz, o) {
+  o.x = XF[3] * lx + XF[6] * ly + XF[9] * lz;
+  o.y = XF[4] * lx + XF[7] * ly + XF[10] * lz;
+  o.z = XF[5] * lx + XF[8] * ly + XF[11] * lz;
   return o;
 }
 

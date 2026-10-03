@@ -74,6 +74,7 @@ export class Ballistics extends EventEmitter {
       tracer: !!opts.tracer,
       alive: true,
       passed: [],                 // 관통한 것 [{objectType, material}]
+      retained: 1,                // 관통·물·도탄으로 남은 속도 비율 (공기 저항 제외) — 3단계 '저속 탄' 판정
       prev: v3(o.x, o.y, o.z),    // 마지막 update 시작 위치 (예광 줄) — 처음엔 원점
       endReason: null,
       ricochets: 0,
@@ -321,7 +322,7 @@ export class Ballistics extends EventEmitter {
     this.emit('hit', {
       projectile: p, shooter: p.shooter, person, part: cap.part, point, normal, dir, speed: p.speed, incidenceDeg,
       distance: Math.hypot(point.x - o.x, point.y - o.y, point.z - o.z), timeOfFlight: p.time,
-      penetrated: p.passed.map((e) => e.objectType), ricochets: p.ricochets,
+      penetrated: p.passed.map((e) => e.objectType), ricochets: p.ricochets, retained: p.retained, capsule: cap,
     });
     this._end(p, 'stopped');
   }
@@ -338,6 +339,7 @@ export class Ballistics extends EventEmitter {
     const before = p.speed, after = before * mul;
     set(p.vel, d.x * after, d.y * after, d.z * after);
     p.speed = after;
+    p.retained *= mul;
     p.passed.push({ objectType: e.objectType, material: e.material });
     p._ignore = e.object;   // 다시 출발할 때 같은 물체에 또 들어가지 않게
     this.emit('partial', {
@@ -365,12 +367,14 @@ export class Ballistics extends EventEmitter {
       const after = before * W.ricochetSpeedMul;
       set(p.vel, d.x * after, d.y * after, d.z * after);
       p.speed = after;
+      p.retained *= W.ricochetSpeedMul;
       p.ricochets++;
       p.pos.y += 0.001;
     } else {
       const after = before * W.entrySpeedMul;
       p.vel.x *= W.entrySpeedMul; p.vel.y *= W.entrySpeedMul; p.vel.z *= W.entrySpeedMul;
       p.speed = after;
+      p.retained *= W.entrySpeedMul;
       p._inWater = true;
       p._ignore = WATER_OBJECT;
       p.passed.push({ objectType: 'water', material: 'water' });
@@ -396,6 +400,7 @@ export class Ballistics extends EventEmitter {
     const after = p.speed * R.speedMul;
     set(p.vel, d.x * after, d.y * after, d.z * after);
     p.speed = after;
+    p.retained *= R.speedMul;
     p.ricochets++;
     p.pos.x += n.x * 0.001; p.pos.y += n.y * 0.001; p.pos.z += n.z * 0.001;
     p._ignore = cast.objectType === 'terrain' ? null : cast.object;

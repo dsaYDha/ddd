@@ -1,5 +1,6 @@
 // F3 디버그 오버레이 — 실제 상태 값을 그대로 보여준다
 //  2단계 줄: 사격 (발사·명중·명중률·모드·탄·예비 탄창·오염도·고장) / 조준 (ADS·흔들림 진폭·숨 참기·거치·반동 누적·관성) / 제압
+//  3단계 줄: 부상 (혈액량·출혈 속도·의식 단계·붕대/지혈대 남은 수·충격·처치·총) + 상처 목록 (부위·종류·동맥·붕대/지혈대·출혈)
 import { CONFIG } from '../config.js';
 import { surfaceLabel, surfaceKey } from '../world/Surfaces.js';
 
@@ -9,6 +10,7 @@ const HOLD_LABEL = { idle: '가능', holding: '참는 중', recovering: '몰아�
 const LEVEL_LABEL = { none: '없음', light: '경미', heavy: '강함', pinned: '완전 제압' };
 const STATE_LABEL = { reloading: '재장전 중', magCheck: '탄창 확인 중', clearing: '고장 해결 중' };
 const R2D = 180 / Math.PI;
+const STAGE_LABEL = { normal: '또렷함', weak: '약해짐 (80% 미만: 심박·흔들림↑)', faint: '흐려짐 (60% 미만: 회색·흐림·먼 소리)', dead: '의식 없음' };
 
 export class DebugOverlay {
   constructor(root) {
@@ -53,7 +55,10 @@ export class DebugOverlay {
     const f1 = (v) => v.toFixed(1), f2 = (v) => v.toFixed(2);
     const yawDeg = ((-i.yaw * 180 / Math.PI) % 360 + 360) % 360;
     const caps = m.caps;
-    const restr = m.restrictions.size ? [...m.restrictions.keys()].join(', ') + ` (서기 ${caps.canStand ? 'O' : 'X'}, 앉기 ${caps.canCrouch ? 'O' : 'X'}, 속도 ×${caps.maxSpeedMultiplier})` : '없음';
+    const ms = caps.maxSpeed, sp = (v) => (Number.isFinite(v) ? v.toFixed(2) : '-');
+    const capTxt = Number.isFinite(ms.stand) || Number.isFinite(ms.crouch) || Number.isFinite(ms.prone)
+      ? `, 최대 ${sp(ms.stand)}/${sp(ms.crouch)}/${sp(ms.prone)} m/s` : '';
+    const restr = m.restrictions.size ? [...m.restrictions.keys()].join(', ') + ` (서기 ${caps.canStand ? 'O' : 'X'}, 앉기 ${caps.canCrouch ? 'O' : 'X'}, 달리기 ${caps.canSprint ? 'O' : 'X'}, 속도 ×${caps.maxSpeedMultiplier}${capTxt}${Number.isFinite(caps.maxStamina) ? `, 스태미나 ≤${caps.maxStamina}` : ''})` : '없음';
     const net = m.regenRate - m.drainRate;
     const ray = i.rays;
     const lines = [
@@ -73,12 +78,40 @@ export class DebugOverlay {
       `탄도 레이  ${ray.bullet}`,
       `${CONFIG.timeOfDay.presets[i.tod].label} / ${CONFIG.weather.presets[i.weather].label}   품질 ${CONFIG.graphics[i.quality].label}`,
       ...(i.combat ? this._combatLines(i.combat) : []),
+      ...(i.injury ? this._injuryLines(i.injury) : []),
       '',
       '[1~9] 테스트 지점 이동:',
       ...i.testPoints.map((t) => `  ${t.key} ${t.name}`),
-      '[F6] 거동 불능 시뮬레이션   [F7] 제압 테스트   [F8] 표적 배치   [Esc] 설정',
+      '[F6] 대퇴 부상 (테스트)   [F7] 제압 테스트   [F8] 표적 배치   [F9] 피격 테스트   [H] 붕대 [G] 지혈대 [F] 총 줍기   [Esc] 설정',
     ];
     return lines.join('\n');
+  }
+
+  /** 3단계: inj = Injuries (플레이어) */
+  _injuryLines(inj) {
+    const f1 = (v) => v.toFixed(1);
+    const fx = inj.effects();
+    const extra = [];
+    if (inj.stunned) extra.push(`충격 ${inj.stun.toFixed(1)}s`);
+    if (inj.aid) extra.push(`처치: ${inj.aid.kind === 'bandage' ? '붕대' : '지혈대'} ${Math.round(inj.aid.t / inj.aid.duration * 100)}%`);
+    if (inj.weaponDropped) extra.push('총 떨어뜨림');
+    if (inj.dead) extra.push(`사망: ${inj.causeLabel} (${f1(inj.deathTime)}s)`);
+    const lines = [
+      `부상  혈액 ${f1(inj.blood)}%   출혈 ${f1(inj.bleedRate)}%/분   의식 ${STAGE_LABEL[inj.stage] ?? inj.stage}   붕대 ${inj.bandages}  지혈대 ${inj.tourniquets}`
+        + `   흔들림 ×${fx.swayMul.toFixed(2)} 반동 ×${fx.recoilMul.toFixed(2)} 재장전 ×${fx.reloadMul.toFixed(2)}${fx.fireDelay ? ` 발사 지연 ${fx.fireDelay}s` : ''}${fx.noAuto ? ' 연발 불가' : ''}`
+        + (extra.length ? `   [${extra.join(' · ')}]` : ''),
+    ];
+    const T = CONFIG.injury.typeLabels;
+    if (!inj.wounds.length) lines.push('  상처 없음');
+    for (const w of inj.wounds) {
+      const tags = [T[w.type] ?? w.type];
+      if (w.arterial) tags.push('동맥');
+      if (w.lowSpeed) tags.push('저속 탄');
+      if (w.bandaged) tags.push('붕대');
+      if (w.tourniquet) tags.push('지혈대');
+      lines.push(`  · ${w.label} — ${tags.join(', ')} — ${f1(inj.woundBleed(w))}%/분`);
+    }
+    return lines;
   }
 
   /** c: { shooter, stats {shots, hits}, suppression, stress } */

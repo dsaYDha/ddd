@@ -4,7 +4,8 @@
 //   · 'nearPass'  → 그 사람의 suppression.addNearPass(거리)  (payload 에 gain 을 덧붙여 다시 보냄)
 //   · 'impact'    → 착탄점 nearImpactRadius 안의 사람(사수 제외) suppression.addNearImpact + 착탄 소음
 //   · 'partial'   → 착탄 소음 (대나무·덩굴을 맞히는 소리도 적이 듣는다)
-//   · 'hit'       → 사수 명중 통계 + person.emit('hit', e)
+//   · 'hit'       → 사수 명중 통계 + person.injuries.applyHit(e) (결과를 e.wound 에) + person.emit('hit', e)
+//   · 'nearPass'  가 머리·몸통 표면 바깥 injury.grazeDepth 안 → person.injuries.applyNearGraze (결과를 e.graze 에)
 //   Ballistics 이벤트('hit','impact','partial','foliage','nearPass','flyby','end')는 같은 이름·payload 로 다시 보낸다.
 //  게임 루프 순서: update(dt) 를 먼저(탄 이동·제압 감소) → 그다음 사수 갱신(발사). 발사된 탄은 fire 시점에
 //  timeOffset 만큼 미리 진행해 이번 프레임 끝 위치에 있다.
@@ -95,6 +96,8 @@ export class CombatSystem extends EventEmitter {
 
   _onHit(e) {
     if (e.person !== e.shooter) this._statsOf(e.shooter).hits++;
+    const inj = e.person.injuries;
+    e.wound = inj ? inj.applyHit(e) : null;
     e.person.emit('hit', e);
     this.emit('hit', e);
   }
@@ -102,6 +105,8 @@ export class CombatSystem extends EventEmitter {
   _onNearPass(e) {
     const sup = e.person.suppression;
     e.gain = sup ? sup.addNearPass(e.distance, e) : 0;
+    const inj = e.person.injuries;
+    e.graze = inj && e.distance <= CONFIG.injury.grazeDepth ? inj.applyNearGraze(e) : null;
     this.emit('nearPass', e);
   }
 

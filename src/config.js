@@ -611,6 +611,67 @@ export const CONFIG = {
     },
   },
 
+  // ------------------------------------------------------------------
+  // 3단계: 부위별 피격·부상 (사람 공용 — 플레이어·F8 표적·4단계 적 병사가 같은 규칙)
+  //  출혈 단위: 혈액량 %/분 (혈액 100 에서 시작, 상처마다 더함). 시간 단위: s, 거리: m
+  // ------------------------------------------------------------------
+  injury: {
+    // 치명 부위: 머리·목 전체 + 가슴 상부 캡슐 안의 심장·대혈관(구) + 상부 척추(등 쪽 캡슐).
+    //  탄이 들어간 점에서 진행 방향으로 pathLength m 의 탄 경로가 이 구·캡슐을 지나면 치명.
+    //  심장: 가슴 상부 중심에서 앞 forward · 위 up · 왼쪽 left (m), 지름 2×heartRadius ≈ 13cm
+    heartRadius: 0.065, heartOffset: { forward: 0.035, up: -0.01, left: 0.015 },
+    //  척추: 목 아래(목 캡슐 아래 끝 높이)에서 몸통 축을 따라 length m 내려간 선, 가슴 중심축에서 등 쪽 back m, 반경
+    spine: { radius: 0.035, back: 0.075, length: 0.2 },
+    pathLength: 0.45,
+    pathParts: ['upperChest', 'abdomen', 'upperArmL', 'upperArmR'],  // 심장·척추 경로 판정을 하는 부위 (머리·목은 원래 치명)
+    lowSpeedRatio: 0.4,        // 2단계 관통·도탄 뒤 남은 속도 비율이 이 미만이면 한 단계 약하게 (치명 → 가슴 중상, 비치명 → 스침)
+    grazeDepth: 0.02,          // 탄 경로가 판정 표면에서 이만큼 안쪽까지만 들어가면(또는 바깥 이 거리 안을 지나면) 스침
+    stun: 1.5,                 // 비치명 명중: 조작 불가 (s)
+    grazeStun: 2,              // 스침: 경직 (s)
+    // 혈액량 단계 (%): 미만이면 — weak: 심박·흔들림 증가 / faint: 화면 회색·흐림·소리 멀어짐·기는 속도 감소 / dead: 의식 상실 → 사망
+    thresholds: { weak: 80, faint: 60, dead: 40 },
+    // 상처 종류별 효과 (가장 심한 제한이 적용되고 출혈은 더한다)
+    //  forceStance: 맞는 순간 강제로 그 자세 (넘어짐), canStand/canCrouch/canSprint/canJump: 이동 컴포넌트 제한,
+    //  maxSpeed: 최대 이동 속도 (m/s — 숫자면 모든 자세, 객체면 자세별), maxStamina: 스태미나 상한,
+    //  swayMul/recoilMul/reloadMul: 조준 흔들림·반동·재장전(동작) 시간 배율, bleed: %/분,
+    //  arterial: { chance, bleed } — 맞을 때 그 확률로 동맥 출혈 (출혈 %/분이 바뀜)
+    wounds: {
+      graze: { bleed: 1, swayMul: 1.3 },
+      chest: { forceStance: 'prone', canStand: false, canCrouch: false, canSprint: false, canJump: false, maxSpeed: 0.15, maxStamina: 30, swayMul: 2, bleed: 12, cough: true },
+      abdomen: { forceStance: 'prone', canStand: false, canCrouch: false, canSprint: false, canJump: false, maxSpeed: 0.15, swayMul: 2, bleed: 8 },
+      pelvis: { forceStance: 'prone', canStand: false, canCrouch: false, canSprint: false, canJump: false, maxSpeed: 0.15, swayMul: 2, bleed: 8 },
+      thigh: { forceStance: 'prone', canStand: false, canSprint: false, canJump: false, maxSpeed: 0.25, bleed: 5, arterial: { chance: 0.25, bleed: 30 } },
+      shin: { canSprint: false, canJump: false, maxSpeed: { stand: 0.3, crouch: 0.3 }, limp: true, bleed: 3 },
+      upperArm: { swayMul: 4, recoilMul: 2.5, reloadMul: 2.5, bleed: 4, arterial: { chance: 0.15, bleed: 25 } },
+      forearm: { swayMul: 2.5, recoilMul: 2, reloadMul: 2, bleed: 2 },
+    },
+    // 절뚝임 (하퇴): 선 채로 걸을 때 limpSteps 걸음마다 휘청 (속도 × stumbleSpeedMul, 화면이 꺼짐)
+    limp: { steps: [3, 5], stumbleSpeedMul: 0.15 },
+    // 팔: 방아쇠 팔(오른쪽) → 연발 불가 + 발사 지연, 지지 팔(왼쪽) → 흔들림 추가 배율, 맞으면 총을 떨어뜨릴 확률
+    arm: { triggerSide: 'R', noAuto: true, fireDelay: 0.3, supportSwayMul: 1.3, dropChance: 0.3, pickupTime: 2, pickupRange: 1.6 },
+    // 가슴 부상 기침 간격 (s)
+    cough: { interval: [4, 9], swayKick: 1.2 },
+    // 혈액 손실: weak 미만부터 dead 까지 흔들림 배율이 1 → swayMulAtDead 로, 심박 긴장 0 → heartStress
+    //  faint 미만: 엎드려 기는 속도 × faintCrawlMul
+    bloodLoss: { swayMulAtDead: 1.6, heartStress: 0.6, faintCrawlMul: 0.6 },
+    pain: { heartStress: 0.45 },     // 부상이 있으면 심박 긴장 (motor.stress)
+    // 자가 처치: H 붕대 (일반 출혈 × bandageMul, 동맥 출혈은 × bandageArterialMul 까지만),
+    //  G 지혈대 (팔다리 출혈 정지 — 그 팔다리는 계속 못 씀, 몸통 불가). 팔 부상이면 시간 × armTimeMul.
+    //  처치 중 움직이거나(moveCancelSpeed m/s 이상) 맞으면 취소 (붕대·지혈대는 쓰지 않은 것으로)
+    aid: { bandages: 2, tourniquets: 1, bandageTime: 7, tourniquetTime: 5, armTimeMul: 1.5, bandageMul: 0.15, bandageArterialMul: 0.6, moveCancelSpeed: 0.12 },
+    // 사람 개체 (F8 표적): 쓰러진 뒤 가장 가까운 엄폐물로 crawlMin~crawlMax m 기어감 (coverSearch m 안에서 찾음),
+    //  신음·거친 숨 간격 (s), 치명 피격 시 쓰러지는 시간 (s)
+    entity: { crawlMin: 3, crawlMax: 5, coverSearch: 12, vocalInterval: [2.5, 6], fallTime: 0.9, slumpTime: 2.4 },
+    // 플레이어 표현: 이명 (s), 사망 화면까지 (s), 의식 상실 페이드 (s)
+    player: { tinnitus: 3, blur: 0.6, deathScreenDelay: 1.6, faintFade: 3 },
+    // 사망 원인 표기
+    causes: { head: '머리 관통', neck: '목 관통', heart: '심장 관통', spine: '척추 손상', bleed: '출혈' },
+    typeLabels: {
+      graze: '스침', chest: '가슴', abdomen: '복부', pelvis: '골반', thigh: '대퇴', shin: '하퇴', upperArm: '상완', forearm: '하완',
+      lethal: '치명',
+    },
+  },
+
   // 테스트 도구
   testRange: {
     // F8 표적 (플레이어 정면): 거리(m), 자세, cover = 수풀 뒤에 반쯤 가림, walk = 좌우로 걷기
@@ -695,9 +756,11 @@ export const CONFIG = {
     debug: 'F3', incapacitate: 'F6',
     // 2단계: 마우스 버튼은 'Mouse0'(왼쪽)·'Mouse2'(오른쪽)로 표기. 조준 중 Shift(sprint 키) = 숨 참기
     fire: 'Mouse0', aim: 'Mouse2',
-    fireAlt: 'KeyF',          // 마우스 잠금이 안 되는 환경(끌어서 보기)에서 사격
+    fireAlt: 'KeyV',          // 마우스 잠금이 안 되는 환경(끌어서 보기)에서 사격 (3단계: F 는 총 줍기)
     reload: 'KeyR', fireMode: 'KeyB', magCheck: 'KeyT',
     suppressionTest: 'F7', targets: 'F8',
+    // 3단계: 붕대, 지혈대, 떨어뜨린 총 줍기, 피격 테스트 메뉴, 사망 후 다시 시작
+    bandage: 'KeyH', tourniquet: 'KeyG', pickup: 'KeyF', hitTest: 'F9', restart: 'Enter',
   },
 
   // 사용자 설정 기본값 (Esc 메뉴, localStorage 저장)

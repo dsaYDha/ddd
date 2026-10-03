@@ -3,6 +3,9 @@
 //  1인칭 화면 모델(WeaponView, 두 번째 그리기), 착탄·연기 효과(CombatFX), F8 표적(TargetRange + TargetMeshes), F7 제압 테스트,
 //  절차 총소리(WeaponAudio). 프레임 순서: 입력·이동 → combat.update (탄 이동·제압 감소) → 표적·F7 → 사수 (발사 — 탄은
 //  이번 프레임 끝 위치로 미리 진행) → 반동을 시선에 → 카메라 → 조준선을 카메라에 다시 맞춤 → 화면 모델·효과 → 월드 → 화면 모델 그리기.
+//  3단계: 플레이어 부상(Injuries — F8 표적·4단계 적과 같은 컴포넌트). 입력 잠금(충격·사망) → 이동 → 부상 갱신·효과 적용
+//  (이동 제한·조준 배율·무기 배율) → 전투. 표현: 화면 충격·이명·순간 흐림·넘어지는 시점·심박·터널 시야·앓는 숨,
+//  혈액 60% 미만 회색·흐림·먼 소리, 사망 화면 (Enter 다시 시작). H 붕대 · G 지혈대 · F 총 줍기 · F9 피격 테스트 · F6 대퇴 부상.
 import * as THREE from 'three';
 import { CONFIG } from '../config.js';
 import { Settings } from './Settings.js';
@@ -26,6 +29,8 @@ import { BulletWorld } from '../combat/BulletWorld.js';
 import { Shooter } from '../combat/Shooter.js';
 import { TargetRange } from '../combat/TargetRange.js';
 import { SuppressionTest } from '../combat/SuppressionTest.js';
+import { Injuries, makeTestHit } from '../combat/Injuries.js';
+import { InjuryAudio } from '../audio/InjuryAudio.js';
 import { WeaponAudio } from '../audio/WeaponAudio.js';
 import { AudioEngine } from '../audio/AudioEngine.js';
 import { Footsteps } from '../audio/Footsteps.js';
@@ -44,7 +49,30 @@ const OBJECT_LABEL = {
   bananaLeaves: '바나나 잎', vineWall: '덩굴 벽', buttress: '판근',
 };
 
-const INCAPACITATED = { canStand: false, canCrouch: false, canSprint: false, canJump: false, maxSpeedMultiplier: 0.5 };
+// F9 피격 테스트 메뉴 (makeTestHit 종류 + applyHit 옵션) — 실제 탄과 같은 판정·효과 경로
+const HIT_TESTS = [
+  { label: '머리 (치명)', kind: 'head' },
+  { label: '목 (치명)', kind: 'neck' },
+  { label: '심장·대혈관 — 가슴 정면 (치명)', kind: 'heart' },
+  { label: '상부 척추 — 등 (치명)', kind: 'spine' },
+  { label: '가슴 — 폐 (중상)', kind: 'lung' },
+  { label: '복부', kind: 'abdomen' },
+  { label: '골반', kind: 'pelvis' },
+  { label: '오른 상완 (방아쇠 팔)', kind: 'upperArmR', opts: { forceArterial: false } },
+  { label: '오른 상완 — 동맥', kind: 'upperArmR', opts: { forceArterial: true } },
+  { label: '왼 상완 (지지 팔)', kind: 'upperArmL', opts: { forceArterial: false } },
+  { label: '오른 하완', kind: 'forearmR' },
+  { label: '왼 하완', kind: 'forearmL' },
+  { label: '왼 대퇴', kind: 'thighL', opts: { forceArterial: false } },
+  { label: '왼 대퇴 — 동맥', kind: 'thighL', opts: { forceArterial: true } },
+  { label: '오른 하퇴', kind: 'shinR' },
+  { label: '저속 탄 (관통 뒤 30%) → 심장: 가슴 중상으로', kind: 'lowSpeed' },
+  { label: '저속 탄 (관통 뒤 30%) → 대퇴: 스침으로', kind: 'thighR', opts: { retained: 0.3, forceArterial: false } },
+  { label: '스침 — 가슴 옆 1cm', kind: 'graze', opts: { part: 'upperChest' } },
+  { label: '스침 — 머리 옆 1cm', kind: 'graze', opts: { part: 'head' } },
+  { label: '부상 초기화 (테스트 전용 — 게임에선 치유 없음)', kind: 'reset' },
+];
+const AID_LABEL = { bandage: '붕대', tourniquet: '지혈대' };
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
 
@@ -113,7 +141,9 @@ export class Game {
     const weaponData = CONFIG.weapons[CONFIG.weapons.default];
     this.combat = new CombatSystem(this.query, this.noise, { world: new BulletWorld(this.query) });
     this._hitPose = { x: 0, y: 0, z: 0, yaw: 0, stance: 'stand', stanceFrom: 'stand', stanceProgress: 1, lean: 0, arms: 'rifle', eyeHeight: 1.65, bodyPitch: 0 };
-    this.playerPerson = this.combat.addPerson({ name: 'player', isPlayer: true, noiseSource: this.motor, getPose: () => this._playerHitPose() });
+    // 3단계: 부상 — 사람 공용 컴포넌트 (F8 표적·4단계 적과 같은 규칙)
+    this.injuries = new Injuries({ isPlayer: true, motor: this.motor, name: 'player' });
+    this.playerPerson = this.combat.addPerson({ name: 'player', isPlayer: true, noiseSource: this.motor, getPose: () => this._playerHitPose(), injuries: this.injuries });
     this.shooter = new Shooter(this.combat, this.playerPerson, weaponData);
     this.controller.aim = this.shooter.aim;
     this.motor.loadKg = CONFIG.load.baseKg + this.shooter.weapon.weightKg;
@@ -146,6 +176,7 @@ export class Game {
     this.motor.on('stance', (e) => this.footsteps.stance(e));
     this.motor.on('rustle', (e) => this.footsteps.rustle(e));
     this.weaponAudio = new WeaponAudio(this.audio);   // 파형 은행은 audio.init (시작 클릭) 때 만들어진다
+    this.injuryAudio = new InjuryAudio(this.audio);
 
     // ---- 사격 화면·효과 — 로딩 중에 만들어 아래 셰이더 미리 컴파일에 포함 (첫 발·첫 F8 에서 끊기지 않게)
     this.menu.setProgress(0.8, '무기 준비 중…');
@@ -163,6 +194,7 @@ export class Game {
     this._mz = new THREE.Vector3();
     this._md = new THREE.Vector3();
     this._wireCombat();
+    this._resetInjuryState();
 
     // ---- UI
     this.hud = new HUD(this.uiEl);
@@ -170,6 +202,7 @@ export class Game {
     this.uiEl.insertAdjacentHTML('afterbegin', `<div id="grade-vignette" style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at center, rgba(0,0,0,0) 58%, rgba(0,0,0,${CONFIG.lighting.vignette}) 100%)"></div>`);
     this.debug = new DebugOverlay(this.uiEl);
     this.controller.on('toast', (msg) => this.hud.toast(msg));
+    this._wireInjuries();
     this._buildNoiseRing();
 
     // ---- 설정 반영
@@ -189,8 +222,7 @@ export class Game {
     this.input.on('lockerror', () => this._onLockError());
     this.input.on('keydown', (e) => this._globalKey(e));
     this.menu.on('play', () => this.play());
-    this.menu.on('debug', (v) => this.debug.toggle(v));
-    this.menu.on('incapacitate', (v) => this.setIncapacitated(v));
+    this.menu.on('debug', (v) => { this.debug.toggle(v); this._syncHitLog(); });
     window.addEventListener('resize', () => this._resize());
 
     // ---- 셰이더 미리 컴파일 (첫 프레임 끊김 방지)
@@ -218,7 +250,7 @@ export class Game {
     warm.geometry.dispose();
     this.menu.setProgress(1, '준비 완료');
     this.menu.ready();
-    this.menu.sync({ debug: this.debug.visible, incapacitated: this.motor.hasRestriction('incapacitated') });
+    this.menu.sync({ debug: this.debug.visible });
 
     this.timer.connect?.(document);
     renderer.setAnimationLoop(() => this._frame());
@@ -261,7 +293,7 @@ export class Game {
     clearTimeout(this._lockTimer);
     this.input.dragLook = true;
     this._resume();
-    this.hud.toast('마우스를 누른 채 끌어서 시점 이동 · 우클릭 조준 · F 사격 · Esc 메뉴', 4);
+    this.hud.toast('마우스를 누른 채 끌어서 시점 이동 · 우클릭 조준 · V 사격 · Esc 메뉴', 4);
   }
 
   _resume() {
@@ -276,14 +308,69 @@ export class Game {
   _pause() {
     this.paused = true;
     this.menu.show(this.started);
-    this.menu.sync({ debug: this.debug.visible, incapacitated: this.motor.hasRestriction('incapacitated') });
+    this.menu.sync({ debug: this.debug.visible });
     this.audio.suspend();
   }
 
-  setIncapacitated(on) {
-    if (on) this.motor.setRestriction('incapacitated', INCAPACITATED);
-    else this.motor.clearRestriction('incapacitated');
-    this.hud?.toast(on ? '거동 불능 — 포복만 가능 (속도 50%)' : '거동 불능 해제');
+  /** F9·F6 피격 테스트: 지금 자세의 판정 캡슐에 실제 탄과 같은 명중을 만들어 같은 경로로 적용 */
+  testHit(kind, opts = {}) {
+    if (kind === 'reset') { this._resetInjuries(); this.hud.toast('부상 초기화 (테스트)'); return null; }
+    if (this.injuries.dead) return null;
+    this.playerPerson.refresh();
+    const hit = makeTestHit(this.playerPerson, kind, opts);
+    if (!hit) return null;
+    hit.shooter = null;
+    const r = this.injuries.applyHit(hit, opts);
+    hit.wound = r;
+    this._onPlayerHit(hit);
+    return r;
+  }
+
+  /** Enter (사망 화면): 시작 지점에서 다시 — 부상·무기·탄·표적·효과 초기화 */
+  restart() {
+    const st = this.data.layout.start;
+    const m = this.motor;
+    this.targetRange.clear();
+    if (this.suppressionTest.active) this.suppressionTest.stop('restart');
+    this.combat.reset();
+    this.combatFX.clear();
+    this._resetInjuries();
+    for (const k of [...m.restrictions.keys()]) m.clearRestriction(k);
+    m.stance = m.stanceFrom = 'stand';
+    m.stanceProgress = 1;
+    m.eyeHeight = CONFIG.stance.eyeHeight.stand;
+    m.stamina = CONFIG.stamina.max;
+    m.exhausted = false;
+    m.heartRate = CONFIG.heart.rest;
+    m.stress = 0;
+    this.teleport(st.x, st.z, st.yaw);
+    const sh = this.shooter;
+    sh.weapon.reset();
+    sh.aim.reset();
+    this.playerPerson.suppression.reset();
+    this.hud.toast('다시 시작');
+  }
+
+  /** 부상·표현 상태 초기화 (다시 시작, F9 초기화) */
+  _resetInjuries() {
+    this.injuries.reset();
+    this.injuries.apply(this.motor, this.shooter);
+    if (this._droppedMesh) this._droppedMesh.visible = false;
+    this.weaponView.visible = true;
+    this.rig.resetInjury();
+    this.controller.locked = false;
+    this.hud.setDeath(null);
+    this.hud.setBlackout(0);
+    this.hud.setHitTest(null);
+    this._resetInjuryState();
+  }
+
+  _resetInjuryState() {
+    this._inj = {
+      tinnitus: 0, blur: 0, deathT: -1, deathShown: false, filter: '', stainT: 1.5, pickup: null,
+      hitTest: false, hitIndex: 0,
+    };
+    if (this.renderer) this.renderer.domElement.style.filter = '';
   }
 
   teleport(x, z, yaw = this.controller.yaw) {
@@ -298,8 +385,39 @@ export class Game {
   _globalKey(e) {
     const K = CONFIG.controls;
     if (e.code === 'Escape' && this.input.dragLook && !this.paused) { this._pause(); return; }
-    if (e.code === K.debug) this.debug.toggle();
-    if (e.code === K.incapacitate) this.setIncapacitated(!this.motor.hasRestriction('incapacitated'));
+    if (e.code === K.debug) { this.debug.toggle(); this._syncHitLog(); }
+    const J = this._inj;
+    // 사망 화면: Enter 로 다시 시작 (다른 키는 무시)
+    if (this.injuries.dead) {
+      if (!this.paused && e.code === K.restart && J.deathShown) this.restart();
+      return;
+    }
+    // F9 피격 테스트 메뉴 (열려 있는 동안 ↑↓·Enter)
+    if (!this.paused && e.code === K.hitTest) {
+      J.hitTest = !J.hitTest;
+      this.hud.setHitTest(J.hitTest ? HIT_TESTS : null, J.hitIndex);
+      return;
+    }
+    if (J.hitTest && !this.paused) {
+      if (e.code === 'ArrowUp' || e.code === 'ArrowDown') {
+        J.hitIndex = (J.hitIndex + (e.code === 'ArrowUp' ? -1 : 1) + HIT_TESTS.length) % HIT_TESTS.length;
+        this.hud.setHitTest(HIT_TESTS, J.hitIndex);
+        return;
+      }
+      if (e.code === K.restart) {
+        const t = HIT_TESTS[J.hitIndex];
+        this.testHit(t.kind, t.opts || {});
+        return;
+      }
+    }
+    if (!this.paused && e.code === K.incapacitate) {
+      // F6: 대퇴 부상 (왼쪽, 동맥 아님) — 1단계 '거동 불능' 시험 키를 실제 부상으로
+      if (this.testHit('thighL', { forceArterial: false })) this.hud.toast('F6 — 왼 대퇴 부상 (테스트)');
+    }
+    if (!this.paused && (e.code === K.bandage || e.code === K.tourniquet)) {
+      this.injuries.startAid(e.code === K.bandage ? 'bandage' : 'tourniquet');
+    }
+    if (!this.paused && e.code === K.pickup) this._startPickup();
     if (!this.paused && e.code === K.suppressionTest) {
       if (this.suppressionTest.toggle()) this.hud.toast(`제압 테스트 — 주변으로 빗나가는 연발 (${CONFIG.testRange.suppression.duration}초)`, 2.2);
     }
@@ -351,8 +469,14 @@ export class Game {
     this._renderStats.triangles = ri.triangles;
     this.renderer.info.reset();
 
+    // 3단계: 충격(조작 불가)·사망이면 입력 잠금 → 이동 → 부상 (출혈·처치·효과를 이동 제한·조준·무기에)
+    const inj = this.injuries;
+    this.controller.locked = inj.dead || inj.stunned;
     this.controller.update(dt);
     m.update(dt);
+    inj.update(dt, { speed: Math.hypot(m.velocity.x, m.velocity.z) });
+    inj.apply(m, this.shooter);
+    this._updatePickup(dt);
     this.noise.rainIntensity = this.atmosphere.rainIntensity;
     this.noise.update(dt);
     this.breath.update(dt, m.breath);
@@ -396,10 +520,11 @@ export class Game {
     if (this._envTimer <= 0) { this._envTimer = 1; this.nearWater = this._nearWater(); }
     this.ambience.update(dt, { dawn: preset.ambienceDawn, day: preset.ambienceDay, dusk: preset.ambienceDusk },
       this.atmosphere.rainIntensity, this.atmosphere.state.wind, this.query.getCanopyCover(m.position.x, m.position.z), this.nearWater);
+    const look = this._updateInjuryLook(dt, sup);
     this.breathing.holding = this.rig.holdingBreath;
-    this.breathing.update(dt, this.breath, m);
+    this.breathing.update(dt, this.breath, look.body);
     this.weaponAudio.update(dt);
-    this.weaponAudio.setMuffle(sup.muffle);
+    this.weaponAudio.setMuffle(Math.max(sup.muffle, look.muffle));
 
     // 노출도 (4단계 적 시야용)
     this._exposureTimer -= dt;
@@ -413,7 +538,7 @@ export class Game {
     }
 
     // UI
-    this.hud.tunnel = sup.tunnel;
+    this.hud.tunnel = Math.max(sup.tunnel, look.tunnel);
     this.hud.update(dt, m, this.controller.quiet);
     this._ringAge += dt;
     this.noiseRing.visible = this.debug.visible;
@@ -428,6 +553,7 @@ export class Game {
       tod: this.atmosphere.tod, weather: this.atmosphere.weather, quality: this.settings.get('quality'),
       render: this._renderStats, veg: this.world.stats, testPoints: this.data.testPoints,
       combat: { shooter: sh, stats: this.combat.stats(this.playerPerson), suppression: this.playerPerson.suppression, stress: m.stress },
+      injury: inj,
     });
 
     this.renderer.render(this.scene, this.camera);
@@ -464,7 +590,7 @@ export class Game {
     if (k.staminaCost) m.stamina = Math.max(0, m.stamina - k.staminaCost);
     sh.weapon.updateFouling(dt, { stance: m.stance, surface: m.surface, moving: m.speed > 0.1, waterDepth: m.ground.waterDepth });
     m.loadKg = CONFIG.load.baseKg + sh.weapon.weightKg;   // 탄을 쓰면 가벼워짐
-    m.stress = sup.heartStress;
+    m.stress = Math.max(sup.heartStress, this.injuries.effects().heartStress);   // 겁(제압)과 통증·출혈 중 큰 쪽
     return sup;
   }
 
@@ -568,10 +694,19 @@ export class Game {
     });
     c.on('foliage', (e) => fx.foliage(e));
     c.on('hit', (e) => {
+      if (e.person === this.playerPerson) return;   // 내 몸: _onPlayerHit (몸 안에서 울리는 소리·화면 충격)
       fx.bodyHit(e);
+      const w = e.wound;
+      if (w) {
+        fx.blood({ point: e.point, normal: e.normal, dir: e.dir, severity: w.severity, arterial: w.arterial });
+        // 치명·동맥이면 발밑 땅에 바로 어두운 얼룩 (쓰러진 자리에는 출혈 때마다 더 생긴다)
+        if (!w.alreadyDead && (w.severity === 'lethal' || w.arterial)) fx.bloodStain(e.person.position, 0.8);
+      }
       const a = spatial(e.point);
       wa.impact({ material: 'body', distance: a.distance, pan: a.pan, behind: a.behind, speed: e.speed });
     });
+    this.playerPerson.on('hit', (e) => this._onPlayerHit(e));
+    c.on('nearPass', (e) => { if (e.person === this.playerPerson && e.graze) this._onPlayerHit({ ...e, wound: e.graze }); });
     // 초음속 탄이 플레이어 곁을 지나감: '딱' (발사음보다 먼저) + 화면 움찔 + 총 움찔 — 가까울수록 크게
     c.on('flyby', (e) => {
       if (e.person !== this.playerPerson) return;
@@ -597,11 +732,209 @@ export class Game {
 
     // F8: 표적 메시·피격 로그
     const tr = this.targetRange;
-    tr.on('state', (e) => {
-      this.targetMeshes.sync(tr);
-      this.hud.setHitLog(e.active ? tr.log : null);
+    // 히트마커 없음: 피격 로그는 F3 디버그를 켰을 때만 (쓰러지는 모습만 보고 판단)
+    tr.on('state', () => { this.targetMeshes.sync(tr); this._syncHitLog(); });
+    tr.on('log', () => this._syncHitLog());
+    // 사람 개체: 신음·거친 숨·기침, 땅 핏자국, 쓰러지는 소리
+    const ia = this.injuryAudio;
+    const at = { x: 0, y: 0, z: 0 };
+    tr.on('vocal', (e) => {
+      at.x = e.position.x; at.y = e.position.y + 0.4; at.z = e.position.z;
+      const a = spatial(at);
+      ia.vocal(e.kind, { distance: a.distance, pan: a.pan, behind: a.behind, stage: e.stage });
     });
-    tr.on('log', () => this.hud.setHitLog(tr.active ? tr.log : null));
+    tr.on('bleed', (e) => fx.bloodStain(e.position, 0.6 + Math.min(1.2, e.rate / 15)));
+    tr.on('fall', (e) => {
+      const p = e.target.pos;
+      at.x = p.x; at.y = p.y + 0.4; at.z = p.z;
+      const a = spatial(at);
+      const E = CONFIG.injury.entity;
+      ia.bodyFall({ distance: a.distance, pan: a.pan, behind: a.behind, delay: e.kind === 'collapse' ? E.fallTime * 0.85 : 0.35, heavy: e.kind !== 'sit' });
+    });
+  }
+
+  _syncHitLog() {
+    const tr = this.targetRange;
+    this.hud?.setHitLog(tr.active && this.debug?.visible ? tr.log : null);
+  }
+
+  // =================================================================
+  // 3단계: 플레이어 부상
+  // =================================================================
+  _wireInjuries() {
+    const inj = this.injuries, ia = this.injuryAudio, hud = this.hud;
+    inj.on('forceStance', () => this.rig.knockdown());
+    inj.on('death', (e) => {
+      this._inj.deathT = 0;
+      this._inj.deathCause = e.label;
+      this._inj.pickup = null;
+      this.rig.deathSide = Math.random() < 0.5 ? -1 : 1;
+      this.weaponView.visible = false;   // 쓰러지며 총을 놓침
+      this._inj.hitTest = false;
+      hud.setHitTest(null);
+    });
+    inj.on('drop', () => { this._dropRifle(); hud.toast('총을 떨어뜨렸다 — F 로 줍기', 2.2); });
+    inj.on('pickup', () => {
+      if (this._droppedMesh) this._droppedMesh.visible = false;
+      this.weaponView.visible = true;
+      hud.toast('총을 주웠다');
+    });
+    inj.on('aidStart', (e) => {
+      ia.aidStart(e.kind);
+      hud.toast(`${AID_LABEL[e.kind]}를 감는다 (${e.duration.toFixed(1)}초) — 움직이거나 맞으면 취소`, Math.min(4, e.duration));
+    });
+    inj.on('aidEnd', (e) => {
+      ia.aidEnd(e.kind);
+      const left = e.kind === 'bandage' ? inj.bandages : inj.tourniquets;
+      hud.toast(`${AID_LABEL[e.kind]}를 감았다 (남은 ${AID_LABEL[e.kind]} ${left}개)`, 1.8);
+    });
+    inj.on('aidCancel', (e) => {
+      if (e.reason === 'move' || e.reason === 'hit') hud.toast(`처치 취소 — ${e.reason === 'move' ? '움직임' : '피격'}`);
+    });
+    inj.on('aidRefused', (e) => {
+      const msg = { none: `${AID_LABEL[e.kind]}가 없다`, noWound: '감을 상처가 없다', noLimb: '지혈대는 팔다리에만 감을 수 있다', busy: '이미 처치 중이다' }[e.reason];
+      if (msg) hud.toast(msg);
+    });
+    inj.on('cough', () => {
+      ia.ownCough();
+      this.rig.addShake(1.4);
+      this.shooter.aim.addShake(CONFIG.injury.cough.swayKick);
+    });
+    inj.on('stumble', () => {
+      this.rig.dipVel -= 0.9;
+      this.rig.addShake(1.2);
+      this.shooter.aim.addShake(0.8);
+    });
+  }
+
+  /** 내가 맞음 (실제 탄·근접 통과 스침·F9 테스트): 화면 충격·이명·순간 흐림·몸 소리·땅 핏자국 */
+  _onPlayerHit(e) {
+    const r = e.wound;
+    if (!r || r.alreadyDead) return;
+    const P = CONFIG.injury.player;
+    const yaw = this.controller.yaw;
+    let side = 0, back = 1;
+    if (e.dir) {
+      // 탄 진행 방향 → 시선 기준: 오른쪽에서 날아와 왼쪽으로 가면 side +, 앞에서 와서 뒤로 가면 back +
+      side = -(e.dir.x * Math.cos(yaw) - e.dir.z * Math.sin(yaw));
+      back = e.dir.x * Math.sin(yaw) + e.dir.z * Math.cos(yaw);
+    }
+    const k = r.severity === 'lethal' ? 1.4 : r.severity === 'graze' ? 0.55 : 1;
+    this.rig.impact(side, back, k);
+    this.shooter.aim.addShake(3 * k);
+    this.hud.hitFlash(0.55 + 0.45 * k);
+    this.injuryAudio.selfHit({ severity: r.severity });
+    if (r.severity !== 'lethal') {
+      this.injuryAudio.tinnitus(P.tinnitus, r.severity === 'graze' ? 0.6 : 1);
+      this._inj.tinnitus = P.tinnitus;
+    }
+    this._inj.blur = Math.max(this._inj.blur, P.blur * (r.severity === 'graze' ? 0.6 : 1));
+    this.combatFX.bloodStain(this.motor.position, r.severity === 'graze' ? 0.45 : 0.8);
+  }
+
+  /** 떨어뜨린 총: 화면 모델의 소총 지오메트리를 그대로 (표적 재질 — 숲 그늘을 받음) 발 앞 땅에 옆으로 눕힌다 */
+  _dropRifle() {
+    const m = this.motor, yaw = this.controller.yaw;
+    if (!this._droppedMesh) {
+      const mesh = this._droppedMesh = new THREE.Mesh(this.weaponView.rifleMesh.geometry, this.targetMeshes.material);
+      mesh.name = 'droppedRifle';
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.scene.add(mesh);
+    }
+    const mesh = this._droppedMesh;
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw), rx = Math.cos(yaw), rz = -Math.sin(yaw);
+    const x = m.position.x + fx * 0.55 + rx * 0.3, z = m.position.z + fz * 0.55 + rz * 0.3;
+    const y = this.query.getSupportHeight(x, z) + 0.035;
+    mesh.position.set(x, y, z);
+    mesh.rotation.set(0, yaw + (Math.random() - 0.5) * 1.6, Math.PI / 2);   // 총 길이 축(−Z)을 수평으로, 옆으로 누움
+    mesh.visible = true;
+    this.weaponView.visible = false;
+  }
+
+  /** F: 떨어뜨린 총 줍기 시작 (pickupRange 안, 2초 — 움직이거나 맞으면 취소) */
+  _startPickup() {
+    const inj = this.injuries, J = this._inj;
+    if (!inj.weaponDropped || J.pickup || inj.dead) return;
+    if (inj.stunned || inj.aid) return;
+    const A = CONFIG.injury.arm, p = this._droppedMesh.position, m = this.motor.position;
+    if (Math.hypot(p.x - m.x, p.z - m.z) > A.pickupRange) { this.hud.toast('총이 손에 닿지 않는다 — 더 다가가라'); return; }
+    J.pickup = { t: 0, hits: inj.wounds.length };
+    this.hud.toast(`총을 줍는다 (${A.pickupTime}초)`, A.pickupTime);
+  }
+
+  _updatePickup(dt) {
+    const J = this._inj, pk = J.pickup;
+    if (!pk) return;
+    const inj = this.injuries, m = this.motor;
+    if (inj.dead || !inj.weaponDropped) { J.pickup = null; return; }
+    if (Math.hypot(m.velocity.x, m.velocity.z) > CONFIG.injury.aid.moveCancelSpeed || inj.wounds.length !== pk.hits) {
+      J.pickup = null;
+      this.hud.toast('줍기 취소');
+      return;
+    }
+    pk.t += dt;
+    if (pk.t >= CONFIG.injury.arm.pickupTime) { J.pickup = null; inj.pickUpWeapon(); }
+  }
+
+  /**
+   * 부상 표현 한 프레임: 쓰러진 시점·죽음·의식 상실 검은 화면·사망 화면, 화면 흐림·회색 (canvas CSS filter — 바뀔 때만),
+   * 터널 시야·먹먹함·앓는 숨 값을 돌려줌 (재사용 객체)
+   */
+  _updateInjuryLook(dt, sup) {
+    const inj = this.injuries, J = this._inj, P = CONFIG.injury.player, T = CONFIG.injury.thresholds;
+    const out = this._look || (this._look = { tunnel: 0, muffle: 0, body: { heartRate: 70, exhausted: false, pain: 0, chest: false } });
+    const m = this.motor, fx = inj.effects();
+    this.rig.downed = !inj.dead && fx.downed;
+    J.tinnitus = Math.max(0, J.tinnitus - dt);
+    J.blur = Math.max(0, J.blur - dt);
+    const loss = inj.bloodLossFactor;
+    const faint = inj.dead ? 1 : Math.min(1, Math.max(0, (T.faint - inj.blood) / (T.faint - T.dead)));
+    // 처치 소리
+    if (inj.aid) this.injuryAudio.aidTick(inj.aid.kind, inj.aid.t / inj.aid.duration, dt);
+    // 피를 흘리는 동안 발밑에 어두운 얼룩
+    const rate = inj.bleedRate;
+    if (rate > 0 && !inj.dead) {
+      J.stainT -= dt * Math.min(3, 0.5 + rate / 8);
+      if (J.stainT <= 0) { J.stainT = 1.6; this.combatFX.bloodStain(m.position, 0.5 + Math.min(1, rate / 20)); }
+    }
+    // 죽음: 시점이 땅으로 떨어지고 검게 꺼진 뒤 사망 화면
+    let black = 0;
+    if (inj.dead) {
+      J.deathT += dt;
+      const bleed = inj.cause === 'bleed';
+      this.rig.groundY = this.query.getSupportHeight(m.position.x, m.position.z);
+      this.rig.death = smoothstep(0, bleed ? 1.6 : 1.0, J.deathT);
+      const fadeStart = bleed ? 0 : P.deathScreenDelay - 0.45;
+      const fadeLen = bleed ? P.faintFade : 0.45;
+      black = Math.min(1, Math.max(0, (J.deathT - fadeStart) / fadeLen));
+      const showAt = bleed ? P.faintFade + 0.4 : P.deathScreenDelay;
+      if (!J.deathShown && J.deathT >= showAt) {
+        J.deathShown = true;
+        this.hud.setDeath({ cause: J.deathCause || inj.causeLabel, time: inj.deathTime });
+      }
+    } else if (faint > 0.75) {
+      // 의식이 꺼져 감: 심장 박동에 맞춰 가장자리부터 어두워짐
+      black = (faint - 0.75) * 1.2 * (0.75 + 0.25 * Math.sin(this.hud.pulse * Math.PI * 2));
+    }
+    this.hud.setBlackout(black);
+    // 화면: 맞은 순간 흐림, 혈액 60% 미만 회색·흐림·어두움
+    const blurPx = faint * 2.4 + (J.blur / Math.max(0.01, P.blur)) * 4;
+    const grey = Math.min(0.95, faint * 0.9);
+    const bright = 1 - 0.3 * faint;
+    let f = '';
+    if (blurPx > 0.05 || grey > 0.01) f = `grayscale(${grey.toFixed(2)}) blur(${blurPx.toFixed(1)}px) brightness(${bright.toFixed(2)})`;
+    if (f !== J.filter) { J.filter = f; this.renderer.domElement.style.filter = f; }
+    // 터널 시야 (다치면 좁아지고 피를 잃을수록 더), 먹먹함 (이명 순간 + 60% 미만 멀어짐)
+    out.tunnel = inj.dead ? 0 : (inj.hasWounds ? 0.22 + 0.55 * loss : 0);
+    out.muffle = Math.max(faint * 0.65, (J.tinnitus / P.tinnitus) * 0.75);
+    // 앓는 숨
+    const B = out.body;
+    B.heartRate = m.heartRate;
+    B.exhausted = m.exhausted;
+    B.pain = inj.dead ? 0 : (inj.hasWounds ? (inj.wounds.every((w) => w.type === 'graze') ? 0.3 : 0.65) + 0.35 * loss : 0);
+    B.chest = !inj.dead && fx.cough;
+    return out;
   }
 
   /** 첫 실행 때 프레임이 계속 낮으면 품질을 한 단계 낮추고 알림 (config.performance) */

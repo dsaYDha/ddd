@@ -5,6 +5,9 @@
 //    색: 올리브색 상의, 더 어두운 바지, 밝은 머리 + 손·허리띠·장화 띠 (100m 에서도 덩어리 색으로 읽히게 단순하게).
 //  · 흔들림: target.wobble {x, z} (rad) — 머리 쪽이 수평 방향 (x, z) 로 |(x, z)| 만큼 기울도록 발을 축으로 돌린다 (화면 표현만).
 //  · 걷는 표적: 매 프레임 target.pos / target.yaw 를 따라간다.
+//  · 3단계 쓰러짐: pose.fall {ax, az, angle, lift} — Hitboxes 와 같은 회전(발을 축으로 수평축 둘레)을 메시에 건다
+//    (판정 캡슐 = 보이는 시체). 자세 전환(넘어짐·주저앉음)은 진행도를 1/12 단위로 끊어 지오메트리를 캐시한다
+//    (기어가며 바뀌는 경사 각·눈높이도 끊음 — 매 프레임 지오메트리를 새로 만들지 않게).
 //  · 덤불: range.bushes → 월드 덤불 지오메트리(PlantGeometry.buildShrub) + 월드 잎 머티리얼(world.materials.leaves).
 //    잎 머티리얼은 월드 식생처럼 InstancedMesh(+ 인스턴스 색)로 그린다: 일반 Mesh 도 그려지지만(aWind 는 지오메트리에 있음)
 //    USE_INSTANCING 이 다른 셰이더 변형이라 F8 을 처음 누를 때 셰이더를 새로 컴파일해 끊긴다 → 인스턴싱이면 월드와 같은 프로그램.
@@ -104,21 +107,28 @@ function poseOf(t) {
   return p || { x: t.pos?.x ?? 0, y: t.pos?.y ?? 0, z: t.pos?.z ?? 0, yaw: t.yaw ?? 0, stance: t.stance ?? 'stand', arms: 'down' };
 }
 /** 모양을 바꾸는 자세 값만 (위치·yaw 제외) — 지오메트리 캐시 키 */
+const Q = (v, step) => (Number.isFinite(v) ? Math.round(v / step) * step : v);
+function quantPose(p) {
+  const prog = p.stanceProgress ?? 1;
+  return {
+    stance: p.stance ?? 'stand', stanceFrom: prog >= 1 ? (p.stance ?? 'stand') : p.stanceFrom, stanceProgress: Q(prog, 1 / 12),
+    lean: Q(p.lean || 0, 0.01), arms: p.arms ?? 'rifle', bodyPitch: Q(p.bodyPitch || 0, 0.02), eyeHeight: Q(p.eyeHeight, 0.02),
+  };
+}
 function shapeKey(p) {
+  const q = quantPose(p);
   const f = (v, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : '');
-  return `${p.stance ?? 'stand'}|${p.stanceFrom ?? ''}|${f(p.stanceProgress, 2)}|${f(p.lean)}|${p.arms ?? 'rifle'}|${f(p.bodyPitch)}|${f(p.eyeHeight)}`;
+  return `${q.stance}|${q.stanceFrom ?? ''}|${f(q.stanceProgress, 3)}|${f(q.lean)}|${q.arms}|${f(q.bodyPitch)}|${f(q.eyeHeight)}`;
 }
 function localPose(p) {
-  return {
-    x: 0, y: 0, z: 0, yaw: 0, stance: p.stance ?? 'stand', stanceFrom: p.stanceFrom, stanceProgress: p.stanceProgress,
-    lean: p.lean || 0, arms: p.arms ?? 'rifle', bodyPitch: p.bodyPitch || 0, eyeHeight: p.eyeHeight,
-  };
+  return { x: 0, y: 0, z: 0, yaw: 0, ...quantPose(p) };
 }
 
 const _up = new THREE.Vector3(0, 1, 0);
 const _axis = new THREE.Vector3();
 const _qTilt = new THREE.Quaternion();
 const _qYaw = new THREE.Quaternion();
+const _qFall = new THREE.Quaternion();
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _pv = new THREE.Vector3();
@@ -246,7 +256,17 @@ export class TargetMeshes {
         _qTilt.setFromAxisAngle(_axis, Math.min(MAX_TILT, ang));
         item.mesh.quaternion.multiplyQuaternions(_qTilt, _qYaw);
       } else item.mesh.quaternion.copy(_qYaw);
-      item.mesh.position.set(x, y, z);
+      let lift = 0;
+      const fall = pose.fall;
+      if (fall && fall.angle) {
+        // Hitboxes 와 같은 쓰러짐 회전: yaw(·흔들림) 다음에 발을 축으로 (ax, 0, az) 둘레 angle
+        const kl = Math.hypot(fall.ax, fall.az) || 1;
+        _axis.set(fall.ax / kl, 0, fall.az / kl);
+        _qFall.setFromAxisAngle(_axis, fall.angle);
+        item.mesh.quaternion.premultiply(_qFall);
+        lift = fall.lift || 0;
+      }
+      item.mesh.position.set(x, y + lift, z);
     }
   }
 
