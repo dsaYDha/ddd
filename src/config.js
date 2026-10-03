@@ -246,6 +246,7 @@ export const CONFIG = {
     log:           { blocksMovement: true,  visionBlock: 1.0,  bulletBlock: 'full' },
     rock:          { blocksMovement: true,  visionBlock: 1.0,  bulletBlock: 'full' },
     root:          { blocksMovement: true,  visionBlock: 0.9,  bulletBlock: 'full' },
+    buttress:      { blocksMovement: true,  visionBlock: 1.0,  bulletBlock: 'full' },     // 판근
     dike:          { blocksMovement: false, visionBlock: 1.0,  bulletBlock: 'full' },
     water:         { blocksMovement: false, visionBlock: 0.9,  bulletBlock: 'partial' },
   },
@@ -331,10 +332,10 @@ export const CONFIG = {
   vegetation: {
     // 숲 바닥 분류 비율에 영향 (0~1): 덤불 지면이 되는 하층 밀도 기준값, 밀집 덤불 기준값
     shrubThreshold: 0.5,
-    thicketThreshold: 0.47,
+    thicketThreshold: 0.5,
     litterPatchThreshold: 0.36,  // 클수록 그늘진 낙엽 바닥 조각이 줄어듦
     // 정적 배치 밀도 (1m² 당 시도 수 × 확률)
-    saplingSpacing: 3.7,
+    saplingSpacing: 4.4,
     midTreeSpacing: 8,           // 중층 나무 (9~18m) 배치 간격
     treeFernSpacing: 5.5,
     shrubSpacing: 1.45,

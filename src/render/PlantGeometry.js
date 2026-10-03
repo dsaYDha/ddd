@@ -228,7 +228,7 @@ export function buildSapling(variant, lod) {
   const branches = lod === 0 ? rng.int(4, 6) : 3;
   const clumps = [];
   for (let b = 0; b < branches; b++) {
-    const t = rng.range(0.52, 0.95);
+    const t = rng.range(0.6, 0.95);
     const p = pts[0].clone().lerp(pts[segs], t);
     p.x = pts[Math.round(t * segs)].x; p.z = pts[Math.round(t * segs)].z;
     const a = (b / branches) * TAU + rng.range(-0.4, 0.4);
@@ -239,9 +239,10 @@ export function buildSapling(variant, lod) {
   }
   clumps.push({ c: pts[segs].clone().add(V3(0, 0.1, 0)), r: 0.55 });
   // 줄기에 바로 붙은 잎 무리 (층층이 보이지 않게 사이를 메움)
-  for (let k = 0; k < 2; k++) clumps.push({ c: pts[0].clone().lerp(pts[segs], rng.range(0.6, 0.88)), r: 0.45 });
-  const per = lod === 0 ? 3 : 2;
-  const size = lod === 0 ? 0.45 : 0.68;
+  for (let k = 0; k < 2; k++) clumps.push({ c: pts[0].clone().lerp(pts[segs], rng.range(0.7, 0.9)), r: 0.45 });
+  // 잎 덩어리는 성기게 (어린 나무 수관은 틈으로 뒤가 보임 — 시야 데이터의 수관 차단 0.45 와 맞춤)
+  const per = 2;
+  const size = lod === 0 ? 0.42 : 0.6;
   for (const cl of clumps) {
     for (let i = 0; i < per; i++) {
       const lp = V3(rng.range(-1, 1), rng.range(-0.4, 0.6), rng.range(-1, 1)).multiplyScalar(cl.r * 0.6);
@@ -249,7 +250,7 @@ export function buildSapling(variant, lod) {
       const t = Math.min(1, c.y / H);
       leaves.set('aWind', 0.05 + 0.1 * t, 0.025, rng.float());
       const k = rng.range(0.88, 1.08) * (0.75 + 0.25 * t);
-      leafCluster(leaves, c, size * rng.range(0.85, 1.2), regions[(i + variant) % 3], [k, k, k * 0.95], lp, rng, lod === 0 ? 3 : 2, 0.9);
+      leafCluster(leaves, c, size * rng.range(0.85, 1.2), regions[(i + variant) % 3], [k, k, k * 0.95], lp, rng, 2, 0.9);
     }
   }
   return { bark: bark.build(), leaves: leaves.build() };

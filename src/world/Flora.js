@@ -59,7 +59,7 @@ export function placeFlora(ctx) {
         if (s !== SURFACE.GROUND_COVER && s !== SURFACE.SHRUB) continue;
         data.surface[c] = SURFACE.LEAF_LITTER;
         data.vegKind[c] = VEG.LITTER;
-        data.splat[c * 4 + 3] = Math.min(data.splat[c * 4 + 3], 70);
+        data.splat[c * 4 + 3] = Math.min(data.splat[c * 4 + 3], 105);   // 이끼·덩굴이 조금 덮인 낙엽
       }
     }
   };
@@ -95,8 +95,8 @@ export function placeFlora(ctx) {
         const [ax, az, ay] = pt(0.12), [mx, mz, my] = pt(0.42);
         const [bx, bz] = pt(1);
         const by = Math.min(heightAt(bx, bz) - 0.05, pt(1)[2]);
-        supports.push({ kind: 'capsule', type: 'root', tags: T.root, fin: true, ax, az, ay, bx: mx, bz: mz, by: my, r: capR });
-        supports.push({ kind: 'capsule', type: 'root', tags: T.root, fin: true, ax: mx, az: mz, ay: my, bx, bz, by, r: capR });
+        supports.push({ kind: 'capsule', type: 'buttress', tags: T.buttress, fin: true, ax, az, ay, bx: mx, bz: mz, by: my, r: capR });
+        supports.push({ kind: 'capsule', type: 'buttress', tags: T.buttress, fin: true, ax: mx, az: mz, ay: my, bx, bz, by, r: capR });
       }
       return tree;
   };
@@ -382,12 +382,12 @@ export function placeFlora(ctx) {
       if (slopeAt(x, z) > 35 || startDist(x, z) < 3) return;
       const p = Math.max(lerp(0.66, 0.38, lowAt(x, z)) * (v === VEG.SHRUB || v === VEG.THICKET ? 1.15 : 1), 0.85 * edgeK(x, z));
       if (!r.chance(p) || !free(x, z, 0.8)) return;
-      const height = r.chance(0.12) ? r.range(2.6, 4) : r.range(4, 10);
+      const height = r.chance(0.06) ? r.range(2.6, 4) : r.range(4.5, 10);
       const sp = { x, z, y: heightAt(x, z), rot: r.range(0, TAU), height, variant: r.int(0, 2), rank: r.float() };
       P.sapling.push(sp);
       occ.add(x, z, 0.12);
       circles.push({ x, z, r: 0.07, y0: sp.y - 0.3, y1: sp.y + height, type: 'sapling', tags: T.sapling });
-      circles.push({ x, z, r: height * 0.18 + 0.3, y0: sp.y + Math.max(1.0, height * 0.42), y1: sp.y + height, type: 'saplingCrown', tags: T.saplingCrown });
+      circles.push({ x, z, r: height * 0.18 + 0.3, y0: sp.y + Math.max(1.2, height * 0.5), y1: sp.y + height, type: 'saplingCrown', tags: T.saplingCrown });
     });
   }
 
@@ -451,13 +451,13 @@ export function placeFlora(ctx) {
       const base = { x, z, y: heightAt(x, z), rot: r.range(0, TAU), variant: r.int(0, 2), rank: r.float() };
       if (t < (moist ? 0.32 : 0.09)) {
         P.taro.push({ ...base, height: r.range(0.7, 1.55), variant: r.int(0, 1) });
-      } else if (t < (moist ? 0.4 : 0.22)) {
-        P.rattan.push({ ...base, height: r.range(1.6, 3.6), variant: r.int(0, 1) });
+      } else if (t < (moist ? 0.37 : 0.15)) {
+        P.rattan.push({ ...base, height: r.range(1.2, 2.6), variant: r.int(0, 1) });
       } else {
-        // 무릎~허리 덤불 지면은 대부분 허리 아래, 가끔 키를 넘는 덤불
+        // 키를 넘는 덤불은 밀집 덤불 지대와 트인 곳 가장자리에만 — 보통 숲은 허리 아래라 눈높이 시야가 트임
         const h = v === VEG.THICKET || ek > 0.5 ? r.range(1.4, 2.9)
-          : v === VEG.SHRUB ? (r.chance(0.82) ? r.range(0.6, 1.45) : r.range(1.45, 2.3))
-          : r.range(0.7, 1.7);
+          : v === VEG.SHRUB ? (r.chance(0.94) ? r.range(0.6, 1.45) : r.range(1.45, 2.2))
+          : r.range(0.6, 1.45);
         P.shrub.push({ ...base, height: h });
       }
     });

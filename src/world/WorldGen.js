@@ -438,7 +438,7 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
             surf = SURFACE.WET_EARTH; moist = 0.7; mud = 0.12; veg = VEG.BANK; cover = 0.85;
           } else if (noiseB.fbm(x / 22 + 140, z / 22 - 60, 2) - 0.25 * und > VC.litterPatchThreshold) {
             // 짙은 그늘의 낙엽 바닥 (어린 묘목·이끼가 드문드문)
-            surf = SURFACE.LEAF_LITTER; veg = VEG.LITTER; cover = 0.45 + 0.15 * nCov;
+            surf = SURFACE.LEAF_LITTER; veg = VEG.LITTER; cover = 0.56 + 0.16 * nCov;
           } else if (und > VC.shrubThreshold) {
             surf = SURFACE.SHRUB; veg = VEG.SHRUB; cover = 0.9 + 0.1 * nCov;
           } else {

@@ -26,7 +26,7 @@ const OBJECT_LABEL = {
   terrain: '지형', bigTree: '큰 나무', canopy: '캐노피', palm: '야자수', banana: '바나나', bamboo: '대나무',
   bambooDense: '밀집 대나무', vegetation: '풀·덤불', log: '통나무', rock: '바위', root: '뿌리', dike: '논둑', water: '물',
   midTree: '중층 나무', sapling: '어린 나무', saplingCrown: '어린 나무 잎', treeFern: '나무고사리', treeFernCrown: '나무고사리 잎',
-  bananaLeaves: '바나나 잎', vineWall: '덩굴 벽',
+  bananaLeaves: '바나나 잎', vineWall: '덩굴 벽', buttress: '판근',
 };
 
 const INCAPACITATED = { canStand: false, canCrouch: false, canSprint: false, canJump: false, maxSpeedMultiplier: 0.5 };

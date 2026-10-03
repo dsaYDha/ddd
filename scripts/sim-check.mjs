@@ -333,7 +333,7 @@ console.log('\n[8] raycastWorld (vision / bullet)');
   const v3 = world.raycastWorld(o3, dir3, 20, 'vision');
   const b3 = world.raycastWorld(o3, dir3, 20, 'bullet');
   console.log(`  큰 나무: 시야 → ${v3.object?.type} ${v3.distance.toFixed(1)}m / 탄도 → ${b3.object?.type} ${b3.distance.toFixed(1)}m`);
-  check(b3.object && ['bigTree', 'root', 'terrain'].includes(b3.object.type), '큰 줄기는 탄도 full');
+  check(b3.object && ['bigTree', 'root', 'buttress', 'terrain'].includes(b3.object.type), '큰 줄기는 탄도 full');
 }
 
 // -------------------------------------------------------------------

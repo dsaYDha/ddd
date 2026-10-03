@@ -23,6 +23,8 @@ const SPECIES = {
   bankGrass: { veg: { [VEG.BANK]: 1, [VEG.REED]: 1 }, size: [0.5, 1.0], wet: true },
 };
 
+const UP = new THREE.Vector3(0, 1, 0);
+
 export class GroundCover {
   /**
    * @param {THREE.Scene} scene
@@ -99,7 +101,7 @@ export class GroundCover {
     const C = this.cell;
     const x0 = -d.half + ci * C, z0 = -d.half + cj * C;
     const out = {};
-    const m = new THREE.Matrix4(), quat = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), e = new THREE.Euler();
+    const m = new THREE.Matrix4(), quat = new THREE.Quaternion(), tilt = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), nrm = new THREE.Vector3();
     for (const [key, M] of Object.entries(this.meshes)) {
       const sp = M.sp;
       const rng = new RNG(hash2(hash2(ci + 7919, cj - 104729), key.length * 131 + key.charCodeAt(0)));
@@ -126,14 +128,14 @@ export class GroundCover {
         // 통나무·바위 위, 줄기 속에는 나지 않음
         if (q.getSupportHeight(x, z) > y + 0.05) continue;
         if (q.clearanceAt(x, z, y + 0.4) < 0.05) continue;
-        // 경사면을 따라 눕힘 (납작한 종류)
-        let tx = 0, tz = 0;
+        // 회전한 뒤 납작한 종류는 지면 법선에 맞춰 눕힘 (경사면에서 뜨거나 묻히지 않게)
+        quat.setFromAxisAngle(UP, rot);
         if (sp.flat) {
           const sl = q.getSlope(x, z);
-          tx = Math.atan(sl.gz); tz = -Math.atan(sl.gx);
+          nrm.set(-sl.gx, 1, -sl.gz).normalize();
+          tilt.setFromUnitVectors(UP, nrm);
+          quat.premultiply(tilt);
         }
-        e.set(tx, rot, tz, 'YXZ');
-        quat.setFromEuler(e);
         p.set(x, y - 0.02, z);
         s.set(sc, sc * (sp.flat ? 1 : rng.range(0.85, 1.2)), sc);
         m.compose(p, quat, s);
