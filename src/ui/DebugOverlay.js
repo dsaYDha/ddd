@@ -1,9 +1,14 @@
 // F3 디버그 오버레이 — 실제 상태 값을 그대로 보여준다
+//  2단계 줄: 사격 (발사·명중·명중률·모드·탄·예비 탄창·오염도·고장) / 조준 (ADS·흔들림 진폭·숨 참기·거치·반동 누적·관성) / 제압
 import { CONFIG } from '../config.js';
 import { surfaceLabel, surfaceKey } from '../world/Surfaces.js';
 
 const GAIT_LABEL = { idle: '정지', walk: '걷기', sprint: '달리기', quiet: '조용히 걷기', crouch: '앉아 이동', prone: '포복' };
 const STANCE_LABEL = { stand: '서기', crouch: '앉기', prone: '엎드리기' };
+const HOLD_LABEL = { idle: '가능', holding: '참는 중', recovering: '몰아쉬는 중', cooldown: '대기' };
+const LEVEL_LABEL = { none: '없음', light: '경미', heavy: '강함', pinned: '완전 제압' };
+const STATE_LABEL = { reloading: '재장전 중', magCheck: '탄창 확인 중', clearing: '고장 해결 중' };
+const R2D = 180 / Math.PI;
 
 export class DebugOverlay {
   constructor(root) {
@@ -67,11 +72,33 @@ export class DebugOverlay {
       `시야 레이  ${ray.vision}`,
       `탄도 레이  ${ray.bullet}`,
       `${CONFIG.timeOfDay.presets[i.tod].label} / ${CONFIG.weather.presets[i.weather].label}   품질 ${CONFIG.graphics[i.quality].label}`,
+      ...(i.combat ? this._combatLines(i.combat) : []),
       '',
       '[1~9] 테스트 지점 이동:',
       ...i.testPoints.map((t) => `  ${t.key} ${t.name}`),
-      '[F6] 거동 불능 시뮬레이션   [Esc] 설정',
+      '[F6] 거동 불능 시뮬레이션   [F7] 제압 테스트   [F8] 표적 배치   [Esc] 설정',
     ];
     return lines.join('\n');
+  }
+
+  /** c: { shooter, stats {shots, hits}, suppression, stress } */
+  _combatLines(c) {
+    const w = c.shooter.weapon, a = c.shooter.aim, rest = c.shooter.rest;
+    const f1 = (v) => v.toFixed(1), f2 = (v) => v.toFixed(2);
+    const { shots, hits } = c.stats;
+    const spares = w.mags.filter((m, k) => k !== w.magIndex).map((m) => m.rounds).join(' ');
+    const mode = CONFIG.weapons.modeLabels?.[w.mode] ?? w.mode;
+    const restTxt = a.rested
+      ? `O (${CONFIG.testRange.objectLabels?.[rest.object] ?? rest.object ?? rest.kind ?? '-'})`
+      : (rest.rested ? '감지 중' : 'X');
+    const inertia = Math.hypot(a.inertiaYaw, a.inertiaPitch) * R2D;
+    const sup = c.suppression;
+    return [
+      `사격  발사 ${shots}  명중 ${hits}  명중률 ${shots ? (hits / shots * 100).toFixed(1) : '0.0'}%   모드 ${mode}   탄 ${w.chambered ? 1 : 0}+${w.magRounds}`
+        + ` (예비 탄창 [${spares}])   오염도 ${f1(w.fouling)}   고장 ${w.malfunctioned ? 'O' : 'X'}${STATE_LABEL[w.state] ? '   ' + STATE_LABEL[w.state] : ''}`,
+      `조준  ADS ${f2(a.ads)}  흔들림 진폭 ${f2(a.swayAmpDeg)}°  숨 참기 ${HOLD_LABEL[a.holdState] ?? a.holdState}  거치 ${restTxt}`
+        + `  반동 누적 ${f1(a.recoilClimbDeg)}° (연속 ${a.burst}발 ×${f2(a.recoilMul)})  관성 ${f2(inertia)}°`,
+      `제압  ${f1(sup.value)} (${LEVEL_LABEL[sup.level] ?? sup.level})   심박 긴장 ${f2(c.stress)}   흔들림 배율 ×${f2(a.mul?.suppression ?? 1)}`,
+    ];
   }
 }

@@ -5,7 +5,6 @@
 // 정점 속성 aWind = (가지 흔들림 m, 잎 떨림 m, 위상) — 같은 포기의 줄기와 잎은 같은 값을 써서 함께 움직인다.
 import * as THREE from 'three';
 import { RNG } from '../core/rng.js';
-import { Noise2D } from '../core/noise.js';
 import { MeshBuilder, tube, leafStrip, leafCluster, card } from './MeshBuilder.js';
 import { ATLAS } from './Textures.js';
 import { BARK_ATTRS, LEAF_ATTRS } from './TreeBuilder.js';
@@ -602,24 +601,26 @@ export function buildGroundCoverSpecies() {
 
 // ---------------------------------------------------------------
 // 굵은 리아나 (큰 나무 사이로 늘어진 덩굴) — 월드 좌표로 바로 만들어 청크별로 합침
+//  중심선은 월드 데이터 L.path (Flora — 처짐 + 옆 출렁임) 그대로: 탄도(BulletWorld)의 캡슐 사슬과 같은 점이라
+//  보이는 덩굴과 맞는 자리가 일치한다. path 가 없으면 출렁임 없는 처짐 곡선 (BulletWorld 도 같음)
 // ---------------------------------------------------------------
 export function buildLianas(list, seed = 77) {
   const rng = new RNG(seed);
-  const noise = new Noise2D(seed);
   const bark = barkMB(), leaves = leafMB();
   for (const L of list) {
     const pts = [];
-    const n = 12;
-    const midY = (L.ay + L.by) / 2;
-    const sag = Math.max(0.5, midY - L.sagY);
     const side = V3(-(L.bz - L.az), 0, L.bx - L.ax).normalize();
-    const wob = rng.range(0, 10);
-    for (let i = 0; i <= n; i++) {
-      const t = i / n;
-      const p = V3(L.ax + (L.bx - L.ax) * t, L.ay + (L.by - L.ay) * t - sag * 4 * t * (1 - t), L.az + (L.bz - L.az) * t);
-      p.addScaledVector(side, noise.simplex(t * 3 + wob, 1) * 0.6 * Math.sin(Math.PI * t));
-      pts.push(p);
+    rng.float();   // (예전 출렁임 위상 자리 — 매달린 잎 배치 난수열을 그대로 두려고 한 번 소비)
+    if (L.path) {
+      for (let i = 0; i + 2 < L.path.length; i += 3) pts.push(V3(L.path[i], L.path[i + 1], L.path[i + 2]));
+    } else {
+      const sag = Math.max(0.5, (L.ay + L.by) / 2 - L.sagY);
+      for (let i = 0; i <= 12; i++) {
+        const t = i / 12;
+        pts.push(V3(L.ax + (L.bx - L.ax) * t, L.ay + (L.by - L.ay) * t - sag * 4 * t * (1 - t), L.az + (L.bz - L.az) * t));
+      }
     }
+    const n = pts.length - 1;
     tube(bark, pts, (t, a) => L.r * (1 + 0.15 * Math.sin(a * 2 + t * 20)), 4, () => [0.62, 0.56, 0.46], [1, 0.4], false,
       () => bark.set('aMoss', 0.35));
     // 매달린 잎

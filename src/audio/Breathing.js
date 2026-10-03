@@ -5,6 +5,7 @@ export class Breathing {
   constructor(engine) {
     this.e = engine;
     this.heartPhase = 0;
+    this.holding = false;   // 숨 참는 중 (조준 중 Shift) — 숨소리 없음 (참기 직전 들숨·놓을 때 헐떡임은 WeaponAudio.breath)
   }
 
   /**
@@ -15,7 +16,7 @@ export class Breathing {
     if (!this.e.ready) return;
     const b = cycle.intensity;
     const audible = CONFIG.audio.breathAudibleFrom;
-    if (b > audible) {
+    if (b > audible && !this.holding) {
       const level = Math.pow((b - audible) / (1 - audible), 1.3);
       if (cycle.justInhaled) this._inhale(level, 0.42 / cycle.rate, body.exhausted);
       if (cycle.justExhaled) this._exhale(level, 0.58 / cycle.rate, body.exhausted);

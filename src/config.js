@@ -84,7 +84,7 @@ export const CONFIG = {
     lowStaminaSpeedMul: 0.85,
   },
 
-  // 장비 무게 — 2단계에서 무기 무게가 더해짐
+  // 장비 무게 — 2단계부터 플레이어는 여기에 무기·탄창 무게(weapons.*)가 더해짐 (탄을 쓰면 가벼워짐)
   load: {
     baseKg: 25,
     freeKg: 8,                // 이 무게까지는 영향 없음
@@ -159,6 +159,8 @@ export const CONFIG = {
     fallRate: 0.05,            // 내려가는 속도 (1/s)
     effortWeight: 0.75,
     fatigueWeight: 0.4,
+    stressWeight: 0.6,         // 외부 긴장(제압 등, motor.stress 0~1)이 목표 심박에 더하는 비율
+    stressRiseRate: 0.9,       // 긴장으로 올라갈 때 속도 (1/s) — 총알이 스치면 심장이 바로 뛴다
   },
 
   // ------------------------------------------------------------------
@@ -199,6 +201,11 @@ export const CONFIG = {
     rustleGaitMul: { sprint: 1.6, walk: 1.0, quiet: 0.45, crouch: 0.7, prone: 0.55 },  // 식물 헤치는 소리 배율
     rainReduction: 0.55,      // 폭우(강도 1)일 때 반경 감소 비율
     historySeconds: 6,
+    // 2단계: 사격 관련 소음 (4단계 적 반응용)
+    gunshot: 900,             // 총성
+    impact: 30,               // 착탄
+    weaponMech: 6,            // 탄창 분리·결합, 노리쇠
+    dryFire: 3,               // 빈 약실·고장 '딸깍'
   },
 
   // 노출도 (0~1) — 4단계 적 시야용
@@ -399,6 +406,268 @@ export const CONFIG = {
     sunScatter: 0.55,            // 해 쪽을 볼 때 안개가 밝아지는 정도
   },
 
+  // ==================================================================
+  //  2단계: 무기·조준·탄도·제압
+  // ==================================================================
+  // 무기 데이터 — 무기를 추가하려면 같은 형식의 항목을 하나 더 만들고 default 를 바꾸면 된다.
+  weapons: {
+    default: 'rifle762',
+    rifle762: {
+      label: '7.62mm 돌격소총',
+      weightKg: 3.9,              // 총 무게 (탄창 제외)
+      magCapacity: 30,
+      magsCarried: 6,             // 휴대 탄창 수 (장전 1 + 예비 5)
+      magEmptyKg: 0.33,           // 빈 탄창 무게
+      roundKg: 0.0163,            // 탄 1발 무게
+      rpm: 600,                   // 연사 속도 (발/분)
+      modes: ['semi', 'auto'],    // 사격 모드 (B로 전환, 첫 값이 기본)
+      muzzleVelocity: 715,        // 초속 (m/s)
+      dragK: 0.00142,             // 공기 저항 dv/dt = -k·v² (1/m) — 100m에서 약 620m/s, 300m에서 약 470m/s
+      zeroRange: 100,             // 영점 거리 (m)
+      sightHeight: 0.06,          // 총열 중심에서 조준선까지 높이 (m)
+      sightRadius: 0.378,         // 가늠자~가늠쇠 거리 (m, 화면 모델용)
+      dispersionMOA: 4.5,         // 고유 산포: 탄의 90%가 들어가는 원의 지름 (MOA, 1 MOA = 1/60°)
+      tracer: false,              // 예광탄 (true 면 tracerEvery 발마다 1발)
+      tracerEvery: 1,
+      // 반동 (°) — 시선(카메라)을 직접 밀어 올림
+      recoil: {
+        vertical: 1.8,            // 발당 수직 반동
+        verticalJitter: 0.3,      // ± 무작위
+        horizontal: 0.9,          // 수평 ± 무작위
+        autoRecover: 0.4,         // 저절로 돌아오는 비율 — 나머지 60%는 플레이어가 마우스로 끌어내려야 함
+        kickTime: 0.05,           // 반동이 시선에 실리는 시간 (s)
+        recoverDelay: 0.08,       // 자동 회복이 시작되기까지 (s)
+        recoverTime: 0.22,        // 자동 회복 시간상수 (s)
+        burstGrowth: [1.0, 1.15, 1.3, 1.45, 1.6],  // 연발 n번째 발의 수직 반동 배율 (5발째부터 ×1.6)
+        burstGap: 0.25,           // 이만큼 쉬면 연발 누적 초기화 (s)
+        kickBackM: 0.045,         // 화면 모델이 뒤로 튀는 거리 (m)
+        kickUpDeg: 3.5,           // 화면 모델이 위로 들리는 각 (°)
+      },
+      // 동작 시간 (s)
+      reload: {
+        tactical: 2.3,            // 탄이 남은 상태 (약실 1발 유지 → 31발)
+        empty: 3.0,               // 빈 상태 (노리쇠 당기기 포함)
+        magCheck: 1.5,            // 탄창 확인 (T)
+        clear: 1.5,               // 기능 고장 해결 (R로 노리쇠 당기기)
+        // 동작 중 소리·화면 모델 타이밍 (전체 시간에 대한 비율)
+        tacticalTimeline: { magOut: 0.16, magIn: 0.62 },
+        emptyTimeline: { magOut: 0.13, magIn: 0.5, boltPull: 0.74, boltRelease: 0.82 },
+        clearTimeline: { boltPull: 0.42, boltRelease: 0.58 },   // 고장 해결: 당길 때 불발탄 배출, 놓을 때 다음 탄 장전
+      },
+      // 기능 고장 (발당 확률, 오염도 0~100 에 따라 최대 foulingMaxMul 배)
+      malfunction: { perShot: 0.0005, foulingMaxMul: 20 },
+    },
+    // 탄창 확인 결과 (탄창의 남은 비율 이상이면 그 표시) — 숫자는 보여주지 않는다
+    magCheckLabels: [[0.8, '가득'], [0.4, '절반쯤'], [0.12, '조금'], [0, '거의 없음']],
+    modeLabels: { semi: '단발', auto: '연발' },   // 사격 모드 짧은 표시 (HUD)
+    // 무기 오염도 증가 (초당) — Weapon.updateFouling(dt, { stance, surface, moving, waterDepth }) 가 계산
+    fouling: {
+      proneMud: 4,                // 진흙·논에서 엎드려 기어갈 때
+      proneWet: 1.2,              // 젖은 흙·얕은 물에서 엎드려 기어갈 때
+      submerged: 15,              // 총이 물에 잠겼을 때
+      proneStillMul: 0.25,        // 엎드려 가만히 있을 때 (기어갈 때 대비 비율 — 총이 바닥에 닿아 있긴 하다)
+      mudSurfaces: ['shallowMud', 'deepMud', 'paddy'],   // proneMud 지면
+      wetSurfaces: ['wetEarth', 'shallowWater'],         // proneWet 지면
+      gunHeight: { stand: 1.15, crouch: 0.7, prone: 0.15 },  // 물이 이보다 깊으면 총이 잠김 (자세별 총 높이, m)
+    },
+  },
+
+  // 조준 (흔들림·관성·숨 참기·거치·지향사격 퍼짐) — 사람 공용 (4단계 적 병사도 같은 값)
+  //  src/combat/AimModel.js(흔들림·관성·반동·숨 참기·가늠자) · Rest.js(거치 감지) · Shooter.js(탄 출발점)가 호출 시점에 읽는다.
+  aim: {
+    adsTime: 0.35,                // 가늠자 조준 전환 (s), 우클릭을 누르고 있는 동안 조준
+    adsOutTime: 0.25,             // 조준을 풀 때 총을 내리는 시간 (s)
+    sprintDelay: 0.5,             // 달리기 직후 총을 들어 올리기까지 지연 (s) — 그동안 조준·사격 불가
+    sprintLowerTime: 0.2,         // 달리기 시작하면 총을 낮춰 드는 시간 (s) — 잠깐만 뛰었으면 덜 내려간 만큼 지연도 짧다
+    adsFovMul: 0.93,              // 조준 시 시야각 배율 (확대 아님 — 스코프 없음)
+    adsMoveMul: 0.5,              // 조준 중 이동 속도 배율
+    // 비조준(지향) 사격 퍼짐: 원뿔 반각 (°) — 원판 안 균일 (평균 반경 = 반각의 2/3)
+    hipSpread: { stand: 3.5, crouch: 2.5, prone: 1.5 },
+    hipMoveMul: 2.0,              // 이동 중 최대 배율
+    hipMoveFullSpeed: 1.6,        // 이 속도(m/s)에서 최대 배율
+    hipOffset: { right: 0.17, down: 0.22, forward: 0.1 },   // 지향사격 탄 출발점: 눈에서 오른쪽·아래·앞 (m). 방향은 조준선 그대로
+    // 조준 흔들림 (°): 호흡에 따른 8자 궤적. 진폭 = 8자 궤적의 세로 최대 변위
+    sway: {
+      stand: 1.0, crouch: 0.6, prone: 0.3, rested: 0.15,
+      figureAspect: 0.6,          // 8자 궤적의 가로/세로 비
+      figurePhase: 0,             // 가로 성분 위상 (rad) — 0 이면 가운데에서 교차하는 반듯한 8자
+      rateMul: 1,                 // 8자 한 바퀴 = 호흡 한 번 × 이 배율
+      depthVar: 0.15,             // 호흡마다 깊이(8자 크기)가 달라지는 정도 (±비율) — 같은 궤적이 반복되지 않게
+      drift: 0.35,                // 느리고 불규칙한 흔들림 (진폭 배율) — 8자 전체가 떠다님
+      driftAspect: 1.0,           // 표류의 가로/세로 비
+      driftHz: [0.07, 0.35],      // 표류 주파수 범위 (Hz)
+      tremorDeg: 0.04,            // 손떨림 (기본, 심박에 비례해 커짐)
+      tremorHz: [8, 12],          // 손떨림 주파수 범위 (Hz)
+      restTremorMul: 0.5,         // 거치하면 손떨림 배율 (총 무게를 손이 버티지 않는다)
+      triggerJerkDeg: 0.16,       // 방아쇠를 당길 때 생기는 흔들림 (축별 표준편차, 거치하면 절반) — 흔들림이 작은 엎드려 쏘기에서 상대적으로 큼
+                                  //  (0.12 → 0.15: 엎드려 50m 단발이 75% 경계에서 약 70%로, 서서 30m 는 그대로 약 42%)
+                                  //  (0.15 → 0.16, npm run aim 시드 10개: 엎드려 50m 평균 69.4 → 67.7% (60~75% 의 가운데, 시드별 65~71%),
+                                  //   서서 30m 는 43% 그대로 — 0.01° 당 엎드려 약 −1.6%p, 서서는 거의 무관. 0.15 에선 시드에 따라 72.7% 까지 올라 경계 2%p 근처)
+      restJerkMul: 0.5,           // 거치했을 때 방아쇠 흔들림 배율
+      ampSmoothing: 4,            // 진폭이 목표(자세·심박·제압·숨 참기)를 따라가는 속도 (1/s) — 조준선이 순간이동하지 않게
+    },
+    // 호흡수 (Hz) — 호출자가 호흡수(BreathCycle.rate)를 주지 않을 때 심박에서: baseHz + hrHz × n^hrExp (n = heart.rest~max 비율)
+    breath: { baseHz: 0.25, hrHz: 0.6, hrExp: 1.2 },
+    heart: { restBpm: 70, maxBpm: 170, maxMul: 2.5 },   // 심박 70 → ×1.0, 170 → ×2.5
+    stamina: { below: 60, maxMul: 1.6, exponent: 1.5 }, // 스태미나가 60 아래면 추가로 커짐 (0이면 ×1.6, 낮을수록 가파르게)
+    move: { swayPerMps: 0.8 },                          // 조준 중 이동: 속도 1m/s 당 흔들림 +80%
+    // 숨 참기 (조준 중 Shift)
+    holdBreath: {
+      duration: 4, swayMul: 0.3,                        // 최대 4초, 흔들림 ×0.3
+      recoverTime: 3, recoverSwayMul: 1.8,              // 이후 3초간 흔들림 ×1.8
+      staminaCost: 15,                                  // 스태미나 -15
+      cooldown: 5,                                      // 5초간 다시 숨 참기 불가
+      minFraction: 0.4,                                 // 일찍 놓아도 회복·대가는 최소 이 비율만큼
+      phaseRateMul: 0.1,                                // 숨 참는 동안 8자 궤적 진행 속도 (거의 멈춤)
+      recoverRateMul: 1.6,                              // 숨을 몰아쉬는 동안 호흡(8자)이 빨라짐
+    },
+    // 무기 관성: 시선을 돌리면 총이 늦게 따라오고, 빠르게 돌리면 지나쳤다 돌아옴 (감쇠 스프링)
+    //  stiffness = 고유 각진동수 ω (rad/s, 14 → 주기 약 0.45초), damping = 감쇠비 ζ (<1 이면 지나침, 0.42 → 약 23%)
+    //  gain = 시선 변화 중 총이 뒤처지는 비율, maxLagDeg = 최대 뒤처짐, hipMul = 비조준일 때 gain 배율 (몸에 붙여 듦)
+    inertia: { stiffness: 14, damping: 0.42, gain: 0.85, maxLagDeg: 7, hipMul: 0.6 },
+    // 자세별 반동 배율 (거치하면 자세 대신 rested)
+    recoilStanceMul: { stand: 1.0, crouch: 0.75, prone: 0.5, rested: 0.45 },
+    recoilHorizontalRecover: 1.0, // 수평 반동의 자동 회복 비율 (무기 recoil.autoRecover 대비 — 1 이면 수평도 40%만 돌아옴)
+    shake: { frequency: 5, damping: 0.3 },   // 근접 통과 움찔(addShake): 총이 튀었다 가라앉는 스프링 (Hz, 감쇠비 → 약 0.3초)
+    // 화면 모델 반동 스프링 (뒤로·위로 튀는 크기는 무기 recoil.kickBackM·kickUpDeg) — side·roll 은 발마다 ± 무작위 (°)
+    weaponKick: { frequency: 8, damping: 0.55, sideDeg: 0.6, rollDeg: 2.5 },
+    // 거치: 조준 중 총몸 아래(통나무·바위·흙둔덕) 또는 옆(나무 줄기)에 받칠 곳이 있으면 자동
+    rest: {
+      forward: 0.45,              // 눈에서 총몸(손잡이 덮개)까지 앞쪽 거리 (m)
+      below: 0.09,                // 조준선 아래로 총몸 아랫면까지 (m)
+      minGap: -0.05, maxGap: 0.1, // 총몸 아랫면과 받칠 곳 윗면 사이 허용 간격 (m)
+      probeAhead: 0.15,           // 손잡이 덮개가 길어서 이만큼 앞쪽도 받침을 살핌 (m)
+      // 자세를 더 낮춰 아래 받침에 총을 얹을 수 있는 거리 (m) — 서기: 무릎을 굽힘, 앉기: 더 낮게 앉음, 엎드리기: 없음.
+      // 자세별 눈높이가 고정이라 이게 없으면 높이 0.4~0.8m 통나무·바위에 앉아서 얹을 수 없다 (0 = 정확히 maxGap 까지만)
+      reach: { stand: 0.15, crouch: 0.3, prone: 0 },
+      sideGap: 0.12,              // 나무 줄기 옆면까지 허용 거리 (m)
+      minTrunkR: 0.05,            // 옆에 기댈 수 있는 기둥의 최소 반경 (m)
+      maxSpeed: 0.3,              // 이보다 빠르게 움직이면 거치 풀림 (m/s)
+      enterTime: 0.15, exitTime: 0.25,   // 감지가 이만큼 이어져야 거치 / 해제 (가장자리에서 깜빡이지 않게)
+      blendTime: 0.2,             // 거치 효과(흔들림·반동 감소)가 섞여 들어가는 시간 (s)
+      lowerM: 0.015,              // 거치되면 총이 내려앉는 거리 (화면 표현, m)
+    },
+  },
+
+  // 탄도 (실제 투사체 — 히트스캔 아님)
+  ballistics: {
+    gravity: 9.81,
+    speedOfSound: 343,
+    maxStep: 1 / 240,             // 적분 간격 (s)
+    maxTime: 3, maxRange: 1000,
+    minSpeed: 120,                // 이보다 느려지면 소멸 (m/s)
+    // bulletBlock 'partial' (대나무·얇은 줄기·덩굴 벽): 속도 배율 [최소, 최대], 굴절 [최소, 최대] (°)
+    partial: { speedMul: [0.45, 0.7], deflectDeg: [1, 5] },
+    partialByType: {
+      bamboo: { speedMul: [0.45, 0.65] }, bambooDense: { speedMul: [0.4, 0.6] },
+      vineWall: { speedMul: [0.5, 0.7] }, treeFern: { speedMul: [0.55, 0.75] }, liana: { speedMul: [0.7, 0.85], deflectDeg: [0.5, 2] },
+    },
+    // bulletBlock 'none' (풀잎·덤불·수관): '빽빽한 잎을 지나면 0~1° 랜덤하게 빗나갈 수 있음'
+    //  빽빽한 잎 = 국소 σ ≥ denseSigma (0.7 ≈ 1m 지나면 시야 절반이 가려지는 잎 — 코끼리풀·밀집 덤불·덤불 한가운데·덩굴).
+    //  그런 잎 속의 Σσ·ds 만 세어 확률 1 − exp(−chancePerSigmaM·Σσds) 로 U(0, maxDeflectDeg) 무작위 방향 빗나감 —
+    //  가슴 높이의 보통 숲 공기(σ 대부분 < 0.3)는 세지 않는다. 한 탄의 잎 빗나감은 모두 합쳐 maxDeflectDeg 이내.
+    //  (npm 없이 재는 법·전후 수치: 코끼리풀 3m 약 35%, 높이 1.5m 덤불 한가운데 약 17%, 보통 숲 30m 약 6% — 전에는 20%)
+    //  잎 효과('foliage' 이벤트)는 국소 σ ≥ leafFxSigma 인 잎 속을 leafFxEvery m 지날 때마다 최대 1번
+    foliage: { chancePerSigmaM: 0.12, maxDeflectDeg: 1.0, denseSigma: 0.7, leafFxEvery: 1.5, leafFxSigma: 0.3 },
+    // 물: 수면 진입 시 속도 배율, 물속 감속 (1/m), 얕은 각도면 튕김 (튕길 때 흩어짐 °)
+    water: { entrySpeedMul: 0.3, drag: 1.2, ricochetDeg: 6, ricochetSpeedMul: 0.55, ricochetScatterDeg: 3 },
+    ricochet: { rockDeg: 12, speedMul: 0.5, scatterDeg: 8 },   // 바위에 얕은 각으로 맞으면 튕김
+    rockSlopeDeg: 42,             // 이보다 가파른 지형은 착탄 재질 '바위' (흙이 드러난 급사면)
+    nearPassRadius: 2,            // 제압: 근접 통과 판정 거리 (m)
+    crackRadius: 15,              // 초음속 '딱' 소리가 들리는 최대 빗나감 거리 (m)
+    nearImpactRadius: 2,          // 제압: 근처 착탄 판정 거리 (m)
+  },
+
+  // 제압 (0~100) — 사람 공용 (플레이어·4단계 적 병사)
+  suppression: {
+    passGain: [[0.3, 30], [1.0, 15], [2.0, 5]],   // 빗나간 거리(m) → 증가량 (사이는 선형 보간, 0.3 이하는 30)
+    impactGain: 10,               // 2m 이내 착탄 (판정 거리 = ballistics.nearImpactRadius)
+    decayDelay: 2,                // 마지막 이벤트 후 대기 (s)
+    decayRate: 12,                // 이후 초당 감소
+    levels: { light: 30, heavy: 60, pinned: 85 },  // 경미 / 강함 / 완전 제압
+    // 플레이어에게 나타나는 효과 (수치 100 기준 최대값)
+    effects: {
+      swayMaxMul: 2.5,            // 조준 흔들림 배율 (선형)
+      pinnedSwayMul: 1,           // 완전 제압(85 이상)이면 추가 배율 — 1 = 추가 없음. 사용자 기준 '흔들림 배율 최대 ×2.5'를 지키려고
+                                  //  1.3 → 1 (1.3 이면 85 에서 ×2.96, 100 에서 ×3.25 로 최대를 넘었다). 85 의 '정밀 조준 사실상 불가'는
+                                  //  흔들림 ×2.28 + 미세 떨림 0.26° + 심박 약 119 로 충분 (npm run aim #6: 시드 10개 3.5~5.4%, 기준 10% 이하 —
+                                  //  서서 조준 평소 약 43% 의 1/8. 1.3 일 때는 2.4~3.8%)
+      tremorDeg: 0.3,             // 지속적인 미세 떨림 (°)
+      heartStress: 0.85,          // 심박 긴장 (motor.stress)
+      tunnel: 0.85,               // 터널 시야 (가장자리 어둡고 흐림)
+      muffle: 0.55,               // 주변 소리 먹먹함
+      shakeDeg: 1.6,              // 근접 통과 순간 화면 흔들림 (0.3m 이내 기준, °)
+    },
+  },
+
+  // 부위별 피격 판정 (캡슐) — 3단계에서 부상과 연결. 반경 (m)
+  hitboxes: {
+    // 몸통(가슴 상부·복부·골반)은 좌우로 나란한 캡슐 2개씩 → 두께 = 2r, 너비 = 2r + 간격 (가슴 0.23 × 0.33m)
+    radius: { head: 0.1, neck: 0.055, upperChest: 0.115, abdomen: 0.105, pelvis: 0.11, upperArm: 0.05, forearm: 0.042, thigh: 0.075, shin: 0.055 },
+    labels: {
+      head: '머리', neck: '목', upperChest: '가슴 상부(심장)', abdomen: '복부', pelvis: '골반',
+      upperArmL: '왼팔 상완', upperArmR: '오른팔 상완', forearmL: '왼팔 하완', forearmR: '오른팔 하완',
+      thighL: '왼다리 대퇴', thighR: '오른다리 대퇴', shinL: '왼다리 하퇴', shinR: '오른다리 하퇴',
+    },
+  },
+
+  // 테스트 도구
+  testRange: {
+    // F8 표적 (플레이어 정면): 거리(m), 자세, cover = 수풀 뒤에 반쯤 가림, walk = 좌우로 걷기
+    targets: [
+      { distance: 15, stance: 'stand' },
+      { distance: 30, stance: 'stand', walk: true },
+      { distance: 30, stance: 'crouch', cover: true },
+      { distance: 50, stance: 'stand', cover: true },
+      { distance: 50, stance: 'prone' },
+      { distance: 100, stance: 'stand' },
+    ],
+    walkSpeed: 1.4, walkRange: 4,  // 걷는 표적 속도 (m/s), 좌우 왕복 반경 (m)
+    walkTurnTime: 0.8,             // 걷는 표적이 끝에서 돌아서는 시간 (s) — 플레이어 쪽으로 몸을 돌리며 180°
+    // 배치 탐색: 정면 거리마다 좌우 ±lateralSearch (lateralStep 간격) × 거리 ±distanceSearch (distanceStep 간격) 후보를
+    //  덜 벗어난 순으로 훑어 눈→가슴 직선이 단단한 것(bulletBlock 'full')에 막히지 않고 시야 투과율 ≥ minVisibility 인 첫 자리
+    lateralSearch: 12,             // 시야가 트인 자리를 찾는 좌우 범위 (m)
+    lateralStep: 1.5,              // 좌우 탐색 간격 (m)
+    distanceSearch: 0.1, distanceStep: 0.05,   // 거리 탐색 ±10% (5% 간격)
+    maxOffAxisDeg: 35,             // 정면에서 벗어날 수 있는 최대 각 — 가까운 표적이 시야 밖 옆으로 빠지지 않게
+    minVisibility: 0.25,           // 눈→가슴 시야 투과율 하한 (풀·덤불에 묻혀 안 보이는 자리 제외)
+    spacing: 2.5,                  // 표적끼리 최소 간격 (m) — 엎드린 몸은 몸 길이, 걷는 표적은 걷는 길 전체 기준
+    minSeparationDeg: 1.5,         // 플레이어 눈에서 본 표적끼리 최소 각 (°) — 화면에서 앞뒤로 겹쳐 보이지 않게 (걷는 표적은 길 가운데 기준)
+    maxSlopeDeg: 25,               // 표적을 세울 지면 최대 경사 (°)
+    maxWaterDepth: { stand: 0.35, crouch: 0.2, prone: 0.03 },  // 자세별 허용 물 깊이 (m) — 엎드린 표적이 논물에 잠기지 않게
+    // 반쯤 가리는 수풀: 표적 앞 gap m (플레이어 쪽), 반경, 플레이어 눈에서 볼 때 표적 키 × heightFrac 아래를 가리는 높이
+    //  (오르막·내리막에서도 — 최소 minHeight), 잎 소광계수 σ (1/m)
+    //  σ 는 탄의 잎 적분(ballistics.foliage 빗나감)에 들어간다 — 수풀은 bulletBlock 'none' (막지 않음)
+    cover: { gap: 1.2, radius: 0.75, heightFrac: 0.55, minHeight: 0.45, sigma: 1.6 },
+    // 맞으면 흔들림 (화면 표현만): 충격 기울기 (°, 정수리 높이 명중 기준 — 낮게 맞을수록 작음, 감쇠 때문에 실제 최대는 약 3/4),
+    //  스프링 진동수 (Hz), 감쇠비, 최대 기울기 (°, 연사로 계속 맞아도), 자세별 배율
+    wobble: { impulseDeg: 5, frequency: 1.6, damping: 0.22, maxDeg: 12, stanceMul: { stand: 1, crouch: 0.7, prone: 0.25 } },
+    logSize: 8,                    // 화면 구석 피격 로그 줄 수
+    // 피격 로그 표기: 자세, 관통한 물체 (BulletWorld objectType → 이름)
+    stanceLabels: { stand: '서기', crouch: '앉기', prone: '엎드리기' },
+    objectLabels: {
+      bamboo: '대나무', bambooDense: '대나무 덤불', vineWall: '덩굴 벽', liana: '굵은 덩굴', treeFern: '나무고사리 줄기',
+      water: '물', bigTree: '큰 나무', midTree: '나무', palm: '야자나무', log: '통나무', rock: '바위', root: '뿌리',
+      buttress: '판근', dike: '논둑', terrain: '지면', sapling: '어린 나무', banana: '바나나',
+    },
+    // F7 제압 테스트: 플레이어 주변으로 일부러 빗나가는 연발
+    suppression: {
+      distance: [50, 150],         // 사수 거리 (m), 방향은 무작위
+      burst: [3, 8],               // 연발 발수
+      interval: [1.6, 3.2],        // 연발 사이 간격 (s)
+      duration: 30,                // 자동 종료 (s)
+      miss: [0.3, 2.2],            // 플레이어 머리·몸통에서 빗나가는 거리 (m)
+      minClear: 0.25,              // 플레이어 캡슐과의 최소 간격 (m) — 절대 맞지 않게
+      collideWithin: 30,           // 플레이어 앞 이 거리부터만 지형·나무와 충돌 (먼 사수의 탄이 숲에 다 막히지 않게)
+      shooterHeight: 1.4,          // 가상 사수 총구 높이 (지면 위 m)
+      startDelay: 0.6,             // F7 을 누른 뒤 첫 연발까지 (s)
+      missAngleDeg: [-35, 215],    // 사격선에 수직인 면에서 빗나가는 방향 (0° = 오른쪽, 90° = 위) — 발밑(땅속) 쪽 110° 는 뺌
+      clearPast: 3,                // '트인 사격선' = 충돌이 켜지는 곳부터 플레이어를 이만큼 지날 때까지 막히지 않음 (m)
+      tries: 16,                   // 트인 방향(연발마다)·안전한 빗나갈 지점(발마다)을 찾는 최대 시도 수
+      roundTries: 6,               // 발마다 사격선이 막혀 다시 겨누는 최대 횟수 (사격선 확인 1번 ≈ 0.01~0.3ms — 한 프레임에 몰리지 않게)
+    },
+  },
+
 
   // ------------------------------------------------------------------
   // 사운드
@@ -410,6 +679,12 @@ export const CONFIG = {
     weather: 0.75,
     breathing: 0.7,
     breathAudibleFrom: 0.2,   // 호흡 강도가 이 이상이면 들림
+    weapons: 0.9,             // 총성·기계음·착탄음 (audio/WeaponAudio.js)
+    crack: 0.9,               // 초음속 '딱' 버스 — 먹먹함 필터를 건너뜀 (제압 중에도 날카롭게)
+    reverb: 1.0,              // 정글 잔향(Convolver) 되돌림 크기 — 소리마다 보내는 양은 WeaponAudio 가 정함
+    // 제압 먹먹함: setMuffle(0~1) → 저역 통과 maxHz → minHz (지수 보간), 세상 소리 크기 ×(1 - duck×양)
+    //  제압 효과 muffle 0.55(수치 100) ≈ 2.2kHz 차단 — '약간 먹먹함'
+    muffle: { maxHz: 20000, minHz: 350, duck: 0.25, smoothing: 0.08 },
   },
 
   // 조작 키 (KeyboardEvent.code). Ctrl은 브라우저 단축키와 충돌하므로 쓰지 않는다.
@@ -418,6 +693,11 @@ export const CONFIG = {
     sprint: ['ShiftLeft', 'ShiftRight'], quiet: 'KeyX', crouch: 'KeyC', prone: 'KeyZ',
     leanLeft: 'KeyQ', leanRight: 'KeyE', jump: 'Space',
     debug: 'F3', incapacitate: 'F6',
+    // 2단계: 마우스 버튼은 'Mouse0'(왼쪽)·'Mouse2'(오른쪽)로 표기. 조준 중 Shift(sprint 키) = 숨 참기
+    fire: 'Mouse0', aim: 'Mouse2',
+    fireAlt: 'KeyF',          // 마우스 잠금이 안 되는 환경(끌어서 보기)에서 사격
+    reload: 'KeyR', fireMode: 'KeyB', magCheck: 'KeyT',
+    suppressionTest: 'F7', targets: 'F8',
   },
 
   // 사용자 설정 기본값 (Esc 메뉴, localStorage 저장)

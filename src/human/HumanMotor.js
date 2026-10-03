@@ -5,6 +5,7 @@
 //
 //  입력:  motor.input (move, sprint, quiet, jump, lean), motor.yaw, motor.requestStance()
 //  출력:  position(발 위치), eyeHeight, stamina, heartRate, breath, surface, sink, ...
+//  외부 입력: loadKg (장비 무게), stress (0~1 외부 긴장 — 제압. 목표 심박에 heart.stressWeight 비율로 더해짐)
 //  이벤트: 'footstep' | 'land' | 'suction' | 'stance' | 'slide' | 'exhausted' | 'recovered'
 //  외부 제한: setRestriction(name, {canStand, canCrouch, canProne, canSprint, canJump, maxSpeedMultiplier})
 //            (3단계: 총상으로 거동 불능이 될 때 사용)
@@ -64,6 +65,7 @@ export class HumanMotor extends EventEmitter {
     this.exhausted = false;
     this.heartRate = CONFIG.heart.rest;
     this.breath = 0;                      // 0~1 숨 가쁨
+    this.stress = 0;                      // 외부 긴장 0~1 (제압 등 — Suppression.effects().heartStress) → 목표 심박을 올림
     this.effort = 0;
     this.drainRate = 0;
     this.regenRate = 0;
@@ -672,8 +674,10 @@ export class HumanMotor extends EventEmitter {
     const effortNow = clamp(drain / 12, 0, 1.2);
     this.effort = lerp(this.effort, effortNow, 1 - Math.exp(-1.5 * dt));
     const fatigue = Math.pow(1 - this.stamina / S.max, 1.3);
-    const target = H.rest + (H.max - H.rest) * clamp(H.effortWeight * this.effort + H.fatigueWeight * fatigue + (this.exhausted ? 0.15 : 0), 0, 1);
-    const rate = target > this.heartRate ? H.riseRate : H.fallRate;
+    // 외부 긴장(총알이 스침 등)은 움직이지 않아도 심박을 올리고, 오를 때는 더 빨리 (심장이 바로 뛴다)
+    const stress = clamp(this.stress || 0, 0, 1);
+    const target = H.rest + (H.max - H.rest) * clamp(H.effortWeight * this.effort + H.fatigueWeight * fatigue + (this.exhausted ? 0.15 : 0) + (H.stressWeight ?? 0) * stress, 0, 1);
+    const rate = target > this.heartRate ? Math.max(H.riseRate, (H.stressRiseRate ?? 0) * stress) : H.fallRate;
     this.heartRate += (target - this.heartRate) * (1 - Math.exp(-rate * dt));
     // 숨 가쁨 (0~1): 심박 + 스태미나 부족
     const hrN = (this.heartRate - H.rest) / (H.max - H.rest);
@@ -686,7 +690,7 @@ export class HumanMotor extends EventEmitter {
     return {
       position: this.position, eyeY: this.eyeY, stance: this.stance, transitioning: this.transitioning,
       gait: this.gait, speed: this.speed, surface: this.surface, sink: this.sink, waterDepth: this.ground.waterDepth,
-      stamina: this.stamina, exhausted: this.exhausted, heartRate: this.heartRate, breath: this.breath,
+      stamina: this.stamina, exhausted: this.exhausted, heartRate: this.heartRate, breath: this.breath, stress: this.stress,
       sliding: this.sliding, slopeDeg: this.slope.deg, caps: this.caps,
     };
   }

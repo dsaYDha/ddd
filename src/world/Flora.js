@@ -4,12 +4,37 @@
 // 모든 배치 오브젝트에는 config.objects 의 태그가 붙는다.
 import { CONFIG } from '../config.js';
 import { lerp, smoothstep } from '../core/math.js';
+import { Noise2D } from '../core/noise.js';
 import { SURFACE } from './Surfaces.js';
 import { LAYOUT, riverCenterZ } from './MapLayout.js';
 import { BIG_TREE_VARIANTS, finRidge } from './TreeVariants.js';
 import { NO_WATER, VEG } from './WorldConstants.js';
 
 const TAU = Math.PI * 2;
+
+/** 리아나 중심선 마디 수 (점은 +1) */
+export const LIANA_SEGMENTS = 12;
+
+/**
+ * 리아나 중심선: 두 매단 점 사이 포물선 처짐(가장 낮은 곳 sagY 근처) + 수평 옆으로 출렁임 (끝은 0, 가운데 최대 ±0.6m)
+ * @returns {number[]} [x0,y0,z0, x1,y1,z1, …] (LIANA_SEGMENTS + 1 점)
+ */
+function lianaPath(L, wob, noise) {
+  const n = LIANA_SEGMENTS;
+  const sag = Math.max(0.5, (L.ay + L.by) / 2 - L.sagY);
+  let sx = -(L.bz - L.az), sz = L.bx - L.ax;
+  const sl = Math.hypot(sx, sz) || 1;
+  sx /= sl; sz /= sl;
+  const path = new Array((n + 1) * 3);
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const w = noise.simplex(t * 3 + wob, 1) * 0.6 * Math.sin(Math.PI * t);
+    path[i * 3] = L.ax + (L.bx - L.ax) * t + sx * w;
+    path[i * 3 + 1] = L.ay + (L.by - L.ay) * t - sag * 4 * t * (1 - t);
+    path[i * 3 + 2] = L.az + (L.bz - L.az) * t + sz * w;
+  }
+  return path;
+}
 
 export function placeFlora(ctx) {
   const {
@@ -570,6 +595,11 @@ export function placeFlora(ctx) {
       const sagY = Math.max(midGround + r.range(1.6, 4.5), Math.min(ay, by) - r.range(3, 10));
       P.liana.push({ ax, ay, az, bx, by, bz, sagY, r: r.range(0.035, 0.085), x: (ax + bx) / 2, z: (az + bz) / 2, y: sagY, rank: r.float() });
     }
+    // 중심선 path (처짐 + 옆으로 출렁임) — 렌더러(PlantGeometry.buildLianas)와 탄도(BulletWorld)가 같은 점을 쓴다.
+    //  출렁임은 따로 뗀 난수열(fork 19)이라 위의 배치(어느 나무 사이·높이·굵기)는 그대로.
+    const wr = rng.fork(19);
+    const wn = new Noise2D(wr.int(1, 0x7fffffff));
+    for (const L of P.liana) L.path = lianaPath(L, wr.range(0, 10), wn);
   }
 
   // --- 논의 모

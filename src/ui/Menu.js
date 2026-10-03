@@ -5,7 +5,11 @@ import { EventEmitter } from '../core/EventEmitter.js';
 const CONTROLS = [
   ['WASD', '이동'], ['마우스', '시점'], ['Shift', '달리기'], ['X', '조용히 걷기 (토글)'],
   ['C', '앉기'], ['Z', '엎드리기'], ['Q / E', '기울이기'], ['Space', '점프 (앉은 상태에선 일어서기)'],
+  ['좌클릭', '사격'], ['우클릭 (누르기)', '가늠자 조준'], ['조준 중 Shift', '숨 참기 (최대 4초)'],
+  ['R', '재장전 · 기능 고장 해결'], ['B', '사격 모드 (단발 / 연발)'], ['T', '탄창 확인'],
+  ['F', '사격 (마우스 잠금이 안 될 때)'],
   ['Esc', '일시정지·설정'], ['F3', '디버그 정보 (켜진 동안 1~9: 테스트 지점)'], ['F6', '거동 불능 시뮬레이션'],
+  ['F7', '제압 테스트 (빗나가는 연발)'], ['F8', '표적 배치 · 제거'],
 ];
 
 export class Menu extends EventEmitter {
@@ -18,12 +22,13 @@ export class Menu extends EventEmitter {
       <div id="menu" class="screen">
         <div class="panel">
           <h1>정글</h1>
-          <div class="sub">동남아 열대 정글 · 1단계 — 지형과 이동</div>
+          <div class="sub">동남아 열대 정글 · 2단계 — 무기와 사격</div>
           <div id="loading"><div class="bar"><div class="fill"></div></div><div class="msg">맵 생성 중…</div></div>
           <div id="menu-body" style="display:none">
-            <p class="brief">지형 자체가 적이다. 진흙은 발을 붙잡고, 논은 걸음을 늦추고, 젖은 비탈은 몸을 끌어내린다.
-              오솔길은 빠르지만 드러나고, 숲은 느리고 바스락거리지만 몸을 숨겨 준다.
-              체력 바는 없다 — 숨소리와 흐려지는 시야로 몸 상태를 느껴라.</p>
+            <p class="brief">조준점은 없다 — 가늠자와 가늠쇠뿐이다. 총은 숨을 쉴 때마다 8자로 흔들리고, 뛰고 나면 심장 박동만큼 더 흔들린다.
+              자세를 낮추고, 숨을 참고, 통나무나 나무에 총을 얹어야 겨우 맞는다. 반동은 절반 넘게 스스로 끌어내려야 하고,
+              총알이 귀 옆을 스치면 겁이 나 손이 떨리고 시야가 좁아진다. 탄약 수는 보이지 않는다 — 탄창을 직접 가늠해라.
+              진흙과 비탈, 숨소리로 전하는 몸 상태는 그대로다.</p>
             <p class="touch-note">키보드와 마우스가 필요합니다. 데스크톱 브라우저에서 열어 주세요.</p>
             <button id="btn-play" class="primary">클릭하여 시작</button>
             <div id="lock-msg"></div>
