@@ -1,0 +1,54 @@
+// 소음 이벤트 버스 — 발소리·점프 착지·진흙 발 빼는 소리 등이 (위치, 반경)을 발생시킨다.
+// 4단계에서 적 AI가 subscribe 해서 반경 안에 있으면 반응한다.
+import { CONFIG } from '../config.js';
+import { EventEmitter } from './EventEmitter.js';
+
+export class NoiseEvents extends EventEmitter {
+  constructor() {
+    super();
+    this.time = 0;
+    this.rainIntensity = 0;   // 날씨 시스템이 갱신 (0~1)
+    this.history = [];
+    this.last = null;
+  }
+
+  /** 빗소리가 클수록 반경 감소 */
+  maskFactor() {
+    return 1 - CONFIG.noise.rainReduction * this.rainIntensity;
+  }
+
+  /**
+   * @param {{x:number,y:number,z:number}} position
+   * @param {number} baseRadius  비 감쇠 전 반경 (m)
+   * @param {string} kind        'footstep' | 'land' | 'suction' | 'stance' | 'slide' ...
+   * @param {object} source      발생시킨 주체 (HumanMotor 등)
+   */
+  emitNoise(position, baseRadius, kind, source = null, extra = null) {
+    const evt = {
+      x: position.x, y: position.y, z: position.z,
+      radius: baseRadius * this.maskFactor(),
+      baseRadius, kind, source, time: this.time, ...extra,
+    };
+    this.history.push(evt);
+    this.last = evt;
+    this.emit('noise', evt);
+    return evt;
+  }
+
+  /** 지정 위치에서 들리는 최근 소음 (4단계 AI용) */
+  audibleAt(x, z, sinceSeconds = 1) {
+    const out = [];
+    for (const e of this.history) {
+      if (this.time - e.time > sinceSeconds) continue;
+      const d = Math.hypot(e.x - x, e.z - z);
+      if (d <= e.radius) out.push({ event: e, distance: d });
+    }
+    return out;
+  }
+
+  update(dt) {
+    this.time += dt;
+    const keep = CONFIG.noise.historySeconds;
+    while (this.history.length && this.time - this.history[0].time > keep) this.history.shift();
+  }
+}

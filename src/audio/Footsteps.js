@@ -1,0 +1,141 @@
+// 지면별 발소리 합성: 흙, 낙엽, 질척이는 진흙, 첨벙이는 물, 풀 헤치는 소리
+// 4단계 적 발소리는 같은 함수에 pan / distance 를 넘겨 재사용한다.
+
+export class Footsteps {
+  constructor(engine) {
+    this.e = engine;
+  }
+
+  get out() { return this.e.buses.footsteps; }
+
+  /**
+   * @param {object} evt  HumanMotor 'footstep' 이벤트
+   * @param {{pan?:number, distance?:number}} spatial
+   */
+  play(evt, spatial = {}) {
+    if (!this.e.ready) return;
+    const t = this.e.now + 0.005;
+    const dist = spatial.distance ?? 0;
+    const att = 1 / (1 + dist * 0.12);
+    const g = Math.min(1.6, evt.intensity) * att * (0.85 + Math.random() * 0.3);
+    const pan = spatial.pan ?? (evt.foot === 'L' ? -0.08 : 0.08);
+    const pitch = 0.9 + Math.random() * 0.2;
+    const fn = this[`_${evt.sound}`] || this._dirt;
+    fn.call(this, t, g, pitch, pan, evt);
+  }
+
+  // --- 재료 ------------------------------------------------------
+  _thump(t, g, freq, dur, pan) {
+    this.e.tone({ t, freq, freqEnd: freq * 0.5, dur, gain: 0.5 * g, attack: 0.004, release: dur * 0.9, out: this.out, pan });
+  }
+  _crackles(t, g, n, spread, lo, hi, pan) {
+    for (let i = 0; i < n; i++) {
+      const tt = t + Math.random() * spread;
+      this.e.burst({ t: tt, dur: 0.01 + Math.random() * 0.025, gain: g * (0.15 + Math.random() * 0.25), filter: 'bandpass', freq: lo + Math.random() * (hi - lo), q: 2.5, out: this.out, pan: pan + (Math.random() - 0.5) * 0.2 });
+    }
+  }
+  _squelch(t, g, p, pan, long = 1) {
+    // 질척: 공명 대역통과가 아래로 훑음 + 낮은 '퍽'
+    this.e.burst({ t, dur: 0.18 * long, attack: 0.02, gain: 0.55 * g, filter: 'bandpass', freq: 1100 * p, freqEnd: 260 * p, q: 6, noise: 'pink', out: this.out, pan });
+    this.e.burst({ t: t + 0.02, dur: 0.12 * long, attack: 0.01, gain: 0.35 * g, filter: 'lowpass', freq: 500 * p, q: 1, noise: 'brown', out: this.out, pan });
+    this.e.tone({ t: t + 0.01, freq: 140 * p, freqEnd: 55, dur: 0.12 * long, gain: 0.25 * g, attack: 0.005, out: this.out, pan });
+  }
+  _suck(t, g, p, pan, len = 1) {
+    // 발을 빼는 빨아들이는 소리: 위로 훑는 공명 + 마지막 '뽁'
+    this.e.burst({ t, dur: 0.3 * len, attack: 0.08 * len, gain: 0.5 * g, filter: 'bandpass', freq: 260 * p, freqEnd: 1400 * p, sweep: 0.3 * len, q: 9, noise: 'pink', out: this.out, pan });
+    this.e.tone({ t: t + 0.3 * len, freq: 420 * p, freqEnd: 160, dur: 0.07, gain: 0.32 * g, attack: 0.003, out: this.out, pan });
+  }
+  _splashCore(t, g, p, pan, size = 1) {
+    this.e.burst({ t, dur: 0.22 * size, attack: 0.004, gain: 0.5 * g, filter: 'highpass', freq: 1400 * p, q: 0.7, out: this.out, pan });
+    this.e.burst({ t, dur: 0.16 * size, attack: 0.01, gain: 0.45 * g, filter: 'lowpass', freq: 700 * p, q: 1.2, noise: 'pink', out: this.out, pan });
+    const drops = 3 + Math.floor(Math.random() * 4 * size);
+    for (let i = 0; i < drops; i++) {
+      const tt = t + 0.05 + Math.random() * 0.25 * size;
+      this.e.tone({ t: tt, freq: 1600 + Math.random() * 2400, freqEnd: 900 + Math.random() * 600, dur: 0.03 + Math.random() * 0.03, gain: 0.08 * g, attack: 0.002, out: this.out, pan: pan + (Math.random() - 0.5) * 0.4 });
+    }
+  }
+
+  // --- 지면별 -----------------------------------------------------
+  _dirt(t, g, p, pan) {
+    this._thump(t, g * 0.8, 95 * p, 0.09, pan);
+    this.e.burst({ t, dur: 0.07, gain: 0.32 * g, filter: 'lowpass', freq: 1100 * p, q: 0.8, noise: 'pink', out: this.out, pan });
+    this._crackles(t, g * 0.4, 3, 0.05, 2000, 4000, pan);
+  }
+  _wetDirt(t, g, p, pan) {
+    this._thump(t, g * 0.8, 85 * p, 0.1, pan);
+    this.e.burst({ t, dur: 0.09, gain: 0.3 * g, filter: 'lowpass', freq: 700 * p, q: 1, noise: 'pink', out: this.out, pan });
+    this.e.burst({ t: t + 0.03, dur: 0.08, attack: 0.01, gain: 0.18 * g, filter: 'bandpass', freq: 900 * p, freqEnd: 400, q: 5, out: this.out, pan });
+  }
+  _leaves(t, g, p, pan) {
+    this._thump(t, g * 0.5, 100 * p, 0.07, pan);
+    this.e.burst({ t, dur: 0.16, attack: 0.015, gain: 0.3 * g, filter: 'bandpass', freq: 3200 * p, q: 0.7, out: this.out, pan });
+    this._crackles(t, g * 1.1, 14, 0.18, 1800, 7000, pan);
+  }
+  _mud(t, g, p, pan) {
+    this._squelch(t, g, p, pan, 1);
+    if (Math.random() < 0.4) this._suck(t + 0.22, g * 0.45, p, pan, 0.7);
+  }
+  _deepMud(t, g, p, pan) {
+    this._squelch(t, g * 1.15, p * 0.85, pan, 1.6);
+    this._suck(t + 0.28, g * 0.8, p * 0.9, pan, 1.1);
+  }
+  _paddy(t, g, p, pan) {
+    this._splashCore(t, g * 0.75, p, pan, 0.8);
+    this._squelch(t + 0.05, g * 0.8, p, pan, 1.2);
+    if (Math.random() < 0.5) this._suck(t + 0.3, g * 0.5, p, pan, 0.8);
+  }
+  _splash(t, g, p, pan) {
+    this._splashCore(t, g * 1.1, p, pan, 1);
+  }
+  _wade(t, g, p, pan) {
+    // 허리까지 오는 물: 묵직하게 밀어내는 소리
+    this.e.burst({ t, dur: 0.55, attack: 0.15, gain: 0.55 * g, filter: 'lowpass', freq: 650 * p, freqEnd: 380, q: 1.5, noise: 'pink', out: this.out, pan });
+    this.e.burst({ t: t + 0.1, dur: 0.35, attack: 0.08, gain: 0.2 * g, filter: 'bandpass', freq: 1800 * p, q: 0.8, out: this.out, pan });
+    this._splashCore(t + 0.15, g * 0.35, p, pan, 0.6);
+  }
+  _brush(t, g, p, pan) {
+    // 풀 헤치는 소리: 길고 높은 '쉬익' + 줄기 부딪힘
+    this.e.burst({ t, dur: 0.38, attack: 0.06, gain: 0.42 * g, filter: 'bandpass', freq: 2400 * p, freqEnd: 5200 * p, q: 0.9, out: this.out, pan });
+    this.e.burst({ t: t + 0.1, dur: 0.3, attack: 0.05, gain: 0.25 * g, filter: 'bandpass', freq: 4200 * p, freqEnd: 2600 * p, q: 1.2, out: this.out, pan: -pan });
+    this._crackles(t, g * 0.7, 8, 0.35, 1500, 5000, pan);
+    this._thump(t, g * 0.4, 90 * p, 0.08, pan);
+  }
+
+  // --- 기타 몸 동작 ----------------------------------------------
+  land(evt) {
+    if (!this.e.ready) return;
+    const t = this.e.now + 0.003;
+    const g = Math.min(1.5, 0.6 + evt.speed * 0.25);
+    this._thump(t, g * 1.3, 70, 0.16, 0);
+    const fn = this[`_${evt.sound || 'dirt'}`] || this._dirt;
+    fn.call(this, t + 0.01, g, 0.85, 0, evt);
+  }
+
+  suction(evt) {
+    if (!this.e.ready) return;
+    const t = this.e.now + 0.01;
+    const g = 0.6 + evt.intensity * 0.9;
+    // 빠진 발을 빼는 길고 무거운 빨아들이는 소리
+    this.e.burst({ t, dur: 0.35, attack: 0.12, gain: 0.35 * g, filter: 'lowpass', freq: 380, q: 2, noise: 'brown', out: this.out });
+    this._suck(t + 0.1, g, 0.8, 0, 1.6 + evt.intensity);
+  }
+
+  slide(evt) {
+    if (!this.e.ready) return;
+    const t = this.e.now;
+    const g = Math.min(1.2, 0.5 + evt.speed * 0.35);
+    // 진흙 위로 미끄러지는 '쓰윽' + 흙 부스러기
+    this.e.burst({ t, dur: 0.6, attack: 0.08, gain: 0.8 * g, filter: 'bandpass', freq: 650, freqEnd: 380, q: 1.2, noise: 'pink', out: this.out });
+    this.e.burst({ t: t + 0.08, dur: 0.45, attack: 0.05, gain: 0.45 * g, filter: 'bandpass', freq: 1400, freqEnd: 650, q: 3, out: this.out });
+    this._crackles(t, g * 0.8, 6, 0.5, 900, 3000, 0);
+  }
+
+  stance(evt) {
+    if (!this.e.ready) return;
+    const t = this.e.now;
+    // 장비 덜그럭 + 옷 스치는 소리
+    this.e.burst({ t, dur: 0.25 + (evt.to === 'prone' ? 0.25 : 0), attack: 0.05, gain: 0.18, filter: 'bandpass', freq: 2200, q: 0.8, out: this.out });
+    if (evt.to === 'prone') this._thump(t + evt.duration * 0.8, 0.7, 75, 0.14, 0);
+    this.e.tone({ t: t + 0.05 + Math.random() * 0.1, freq: 2600, freqEnd: 2400, dur: 0.05, gain: 0.03, attack: 0.002, out: this.out });
+  }
+}

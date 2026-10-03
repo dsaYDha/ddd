@@ -1,0 +1,20 @@
+{
+  "name": "jungle-fps",
+  "private": true,
+  "version": "0.1.0",
+  "description": "동남아 정글 사실주의 전쟁 FPS — 1단계: 기술 기반, 정글 맵, 사실적 이동 시스템",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "node scripts/sim-check.mjs",
+    "map": "node scripts/render-map.mjs map.png 2"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "vite": "^8.3.2"
+  }
+}
