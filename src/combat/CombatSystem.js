@@ -104,7 +104,12 @@ export class CombatSystem extends EventEmitter {
 
   _onNearPass(e) {
     const sup = e.person.suppression;
-    e.gain = sup ? sup.addNearPass(e.distance, e) : 0;
+    // 4단계: 무기별 제압 배율 (경기관총·양각대 거치 사격은 더 강하게)
+    const w = e.projectile?.weapon;
+    let mul = (w?.suppressionMul ?? 1) * (e.projectile?.bipod ? (w?.bipodSuppressionMul ?? 1) : 1);
+    // 같은 편 탄 (뒤에서 동료가 쏨)은 덜 무섭다
+    if (e.person.faction && e.person.faction === e.shooter?.faction) mul *= 0.25;
+    e.gain = sup ? sup.addNearPass(e.distance, e, mul) : 0;
     const inj = e.person.injuries;
     e.graze = inj && e.distance <= CONFIG.injury.grazeDepth ? inj.applyNearGraze(e) : null;
     this.emit('nearPass', e);

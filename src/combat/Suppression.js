@@ -81,10 +81,11 @@ export class Suppression extends EventEmitter {
   /**
    * 맞지 않고 지나간 탄 (CombatSystem 이 Ballistics 'nearPass' 를 받아 호출).
    * 증가량이 0 이면(표 범위 밖) 이벤트도 대기 시간 초기화도 없다 — 2m 밖은 '근접 통과'가 아니다.
+   * mul: 무기별 배율 (4단계 경기관총 suppressionMul · 양각대 거치 bipodSuppressionMul — CombatSystem 이 넘김)
    * @returns {number} 이번 증가량 (100 상한으로 잘리기 전 값)
    */
-  addNearPass(distance, info = {}) {
-    const gain = Suppression.gainForPass(distance) * this.gainMul;
+  addNearPass(distance, info = {}, mul = 1) {
+    const gain = Suppression.gainForPass(distance) * this.gainMul * (Number.isFinite(mul) && mul > 0 ? mul : 1);
     if (!(gain > 0)) return 0;
     this.nearPasses++;
     this._raise(gain);

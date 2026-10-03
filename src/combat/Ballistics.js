@@ -72,6 +72,7 @@ export class Ballistics extends EventEmitter {
       shooter: opts.shooter ?? null,
       weapon: w,
       tracer: !!opts.tracer,
+      bipod: !!opts.bipod,        // 4단계: 양각대 거치 사격 (근접 통과 제압 배율)
       alive: true,
       passed: [],                 // 관통한 것 [{objectType, material}]
       retained: 1,                // 관통·물·도탄으로 남은 속도 비율 (공기 저항 제외) — 3단계 '저속 탄' 판정

@@ -156,6 +156,7 @@ export class Injuries extends EventEmitter {
     this.aid = null;              // { kind, t, duration, wound }
     this.weaponDropped = false;
     this.lastHit = null;          // 마지막 결과 (F8 로그·개체 반응용)
+    this.invulnerable = this.invulnerable ?? false;   // F9 무적 (4단계 테스트 — reset 해도 유지)
     this._nextId = 1;
     this._stage = 'normal';
     this._cough = this._coughDelay();
@@ -206,8 +207,11 @@ export class Injuries extends EventEmitter {
   applyHit(hit, opts = {}) {
     const r = classifyHit(hit);
     r.wound = null; r.arterial = false; r.killed = false; r.cause = null; r.dropped = false; r.alreadyDead = this.dead;
+    r.ignored = false;
     this.lastHit = r;
     if (this.dead) return r;
+    // 4단계 테스트: 무적 (판정만 하고 효과 없음)
+    if (this.invulnerable) { r.ignored = true; return r; }
     if (this.aid) this.cancelAid('hit');
     const J = CONFIG.injury;
     if (r.severity === 'lethal') {

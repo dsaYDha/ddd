@@ -456,6 +456,48 @@ export const CONFIG = {
       },
       // 기능 고장 (발당 확률, 오염도 0~100 에 따라 최대 foulingMaxMul 배)
       malfunction: { perShot: 0.0005, foulingMaxMul: 20 },
+      sound: { rate: 1, boom: 1, lpMul: 1, crack: 1 },   // 원거리 총성 합성 배율 (적 무기와 구분되는 기준)
+    },
+    // 4단계 적 무기 — 플레이어(7.62mm)와 다른 계열이라 총성·연사 속도가 다르다 (sound: 원거리 총성 합성 배율)
+    rifle556: {
+      label: '5.56mm 소총 (적)',
+      weightKg: 3.3, magCapacity: 30, magsCarried: 6, magEmptyKg: 0.12, roundKg: 0.012,
+      rpm: 760, modes: ['semi', 'auto'],
+      muzzleVelocity: 930, dragK: 0.0019, zeroRange: 100, sightHeight: 0.065, sightRadius: 0.5,
+      dispersionMOA: 4.0, tracer: false, tracerEvery: 1,
+      recoil: {
+        vertical: 1.35, verticalJitter: 0.25, horizontal: 0.6, autoRecover: 0.4, kickTime: 0.05, recoverDelay: 0.08, recoverTime: 0.22,
+        burstGrowth: [1.0, 1.12, 1.25, 1.38, 1.5], burstGap: 0.25, kickBackM: 0.04, kickUpDeg: 3,
+      },
+      reload: {
+        tactical: 2.4, empty: 3.1, magCheck: 1.5, clear: 1.6,
+        tacticalTimeline: { magOut: 0.16, magIn: 0.62 }, emptyTimeline: { magOut: 0.13, magIn: 0.5, boltPull: 0.74, boltRelease: 0.82 },
+        clearTimeline: { boltPull: 0.42, boltRelease: 0.58 },
+      },
+      malfunction: { perShot: 0.0008, foulingMaxMul: 20 },
+      // 총성: 더 높고 날카롭고(재생 속도↑) 낮은 '쿵'이 작다
+      sound: { rate: 1.24, boom: 0.45, lpMul: 1.25, crack: 1.1 },
+    },
+    lmg762: {
+      label: '7.62mm 경기관총 (적)',
+      weightKg: 8.4, magCapacity: 100, magsCarried: 3, magEmptyKg: 0.25, roundKg: 0.0245,
+      rpm: 650, modes: ['auto'],
+      muzzleVelocity: 830, dragK: 0.00125, zeroRange: 200, sightHeight: 0.07, sightRadius: 0.6,
+      dispersionMOA: 6, tracer: true, tracerEvery: 5,
+      recoil: {
+        vertical: 1.6, verticalJitter: 0.35, horizontal: 1.0, autoRecover: 0.45, kickTime: 0.05, recoverDelay: 0.08, recoverTime: 0.25,
+        burstGrowth: [1.0, 1.1, 1.2, 1.3, 1.4], burstGap: 0.3, kickBackM: 0.05, kickUpDeg: 3,
+      },
+      reload: {
+        tactical: 6.5, empty: 7.5, magCheck: 2, clear: 2.5,
+        tacticalTimeline: { magOut: 0.2, magIn: 0.65 }, emptyTimeline: { magOut: 0.15, magIn: 0.55, boltPull: 0.8, boltRelease: 0.88 },
+        clearTimeline: { boltPull: 0.42, boltRelease: 0.58 },
+      },
+      malfunction: { perShot: 0.0008, foulingMaxMul: 20 },
+      bipod: true,                  // 엎드리면 양각대 거치 (조준 흔들림 → sway.rested)
+      suppressionMul: 1.35,         // 근접 통과 제압 증가 배율 (무거운 탄·연사)
+      bipodSuppressionMul: 1.3,     // 양각대 거치 사격이면 추가 배율 → '거치 사격 시 강한 제압'
+      sound: { rate: 0.9, boom: 1.45, lpMul: 0.9, crack: 1.2 },
     },
     // 탄창 확인 결과 (탄창의 남은 비율 이상이면 그 표시) — 숫자는 보여주지 않는다
     magCheckLabels: [[0.8, '가득'], [0.4, '절반쯤'], [0.12, '조금'], [0, '거의 없음']],
@@ -672,6 +714,115 @@ export const CONFIG = {
     },
   },
 
+  // ------------------------------------------------------------------
+  // 4단계: 적 병사 AI — 적도 플레이어와 같은 이동·사격·제압·부상 규칙 (AI 예외 없음)
+  //  시간 s, 거리 m, 각 °. 판단은 병사마다 초당 thinkHz 회로 나눠서, 시야 레이는 프레임당 raysPerFrame 개까지.
+  // ------------------------------------------------------------------
+  ai: {
+    maxActive: 16,
+    thinkHz: [6, 9],                 // 병사별 판단 빈도 (분산)
+    raysPerFrame: 8,                 // 감지 레이캐스트 예산 (전체)
+    pathsPerFrame: 1,                // A* 경로 요청 예산
+    // 시각 — 발견 수치가 1 에 닿아야 발견 (화면에 표시 안 함)
+    //  속도 = baseRate × 거리 × 노출도 × 투과율 × 움직임 × 주변시 × 상태 × 개인차 × (1 − 제압 감쇠)
+    vision: {
+      fovDeg: 120, centralDeg: 60, peripheralMul: 0.4,
+      range: 160,
+      baseRate: 1.5,                 // 30m · 노출 1 · 투과 1 · 정지 · 정면 · 경계 1 에서 초당
+      refDistance: 30, distanceExp: 1.6, nearDistance: 1.5, maxDistanceMul: 40,
+      exposureFloor: 0.02,           // 노출도 하한 (완전히 가려도 아주 조금은)
+      motionMul: 2.6,                // 1.5m/s 이상 움직이면 × (1 + motionMul)
+      motionFullSpeed: 1.5,
+      stateMul: { patrol: 0.75, suspicious: 1.0, alert: 1.2, engaged: 1.4, search: 1.25, ambush: 1.1 },
+      sharpness: [0.75, 1.25],       // 병사 개인차
+      suppressionDull: 0.6,          // 제압 100 이면 감지 속도 × (1 − 0.6)
+      decay: 0.12,                   // 안 보이면 초당 감소
+      suspicious: 0.35,              // 이 이상이면 '의심' (그쪽을 보고 조사)
+      visibleMin: 0.03,              // 이 투과율 미만은 안 보임
+      sampleParts: ['head', 'upperChest', 'pelvis'],
+      nearSense: { distance: 6, visibility: 0.35 },   // 이 거리 안이면 잎에 가려도 투과율 최소 (가까울수록 큼)
+      flashRange: 220,               // 총구 화염이 보이는 거리 → 시야 안이면 즉시 노출
+      flashVisibleMin: 0.02,
+    },
+    // 청각 — 소음 이벤트(1·2단계)로 대략적인 위치만 추정
+    hearing: {
+      errorFrac: 0.15,               // 추정 오차 = 거리 × 이 값 (평균)
+      crackWindow: 1.2,              // 이 시간 안에 근접 탄('딱')을 들었으면 총성 방향을 헷갈림
+      crackAngleDeg: 45, crackDistFrac: 0.4,
+      speedOfSound: 343,             // 총성은 거리/음속 뒤에 들림
+      shoutRadius: 85,               // 고함 (분대 의사소통, 플레이어에게도 들림)
+      screamRadius: 70,              // 비명·도움 요청
+      ignoreKinds: ['dryFire'],
+    },
+    memory: { uncertaintyGrowth: 0.7, maxUncertainty: 30, forget: 120 },
+    // 반응·조준 (사람다운 실수)
+    reaction: { surprised: [0.8, 1.5], alert: [0.3, 0.7] },
+    aim: {
+      settle: [0.5, 2.0],            // 조준 안정까지 (s) — 처음 오차가 이 시간에 걸쳐 줄어듦
+      initialErrorDeg: [2.0, 6.0],   // 처음 겨눌 때 오차
+      reacquireErrorDeg: [0.8, 2.0], // 연발 사이 다시 겨눌 때
+      residualDeg: 0.5,              // 안정된 뒤에도 남는 느린 오차 (사람 손)
+      readyK: 14, readyMinDeg: 0.35, readyMaxDeg: 1.6,   // '맞았다' 싶을 때 쏨: 오차 < readyK / 거리 (°, 30m 면 0.47°)
+      firstShotReadyDeg: 1.4,        // 발견 직후 첫발은 서둘러 (오차가 이만큼 남아도 쏨) → 자주 빗나감
+      leadAccuracy: [0.35, 1.15],    // 움직이는 표적 앞 겨누기 (1 = 완벽)
+      turnRateDeg: 140,              // 시선 회전 최대 속도
+      recoilPull: 0.75,              // 반동으로 들린 시선을 끌어내리는 비율 (사람 0.6~0.9)
+      hipDistance: 8,                // 이보다 가까우면 가늠자 없이 (지향사격)
+    },
+    fire: {
+      burst: [2, 4], closeBurst: [4, 8], closeRange: 15, mgBurst: [5, 10],
+      burstGap: [0.6, 1.4], mgBurstGap: [0.4, 1.0],
+      suppressiveGap: [1.2, 2.6],    // 보이지 않는 마지막 확인 위치로 제압 사격 간격
+      suppressiveSpread: 2.0,        // 그 위치 주변 m
+      maxRange: 140,
+      panicBurst: [6, 12], panicErrorDeg: [4, 9], panicSuppression: 30, panicChance: 0.35, panicClose: 10,
+      reloadBelow: 0.3,              // 교전이 뜸할 때 탄창 비율이 이 아래면 재장전
+      friendlyClearance: 1.1, friendlyCheckMiss: 0.08,   // 아군 사선 확인 (8% 는 확인을 빼먹음)
+    },
+    // 제압당했을 때 (2단계 제압 수치 그대로)
+    suppression: { lowStance: 30, pinned: 60, cower: 85, resume: 45, peekTime: [0.8, 1.6], crawlBackChance: 0.3, crawlBack: [2, 4] },
+    // 상태 지속
+    states: {
+      suspiciousTime: [10, 18], alertTime: [30, 50], lostContact: [8, 14], searchTime: [60, 180],
+      patrolAlertMul: 1.35,          // 수색을 포기한 뒤 경계 수준이 높아진 순찰 (감지 배율)
+    },
+    // 분대
+    squad: {
+      spacing: [5, 10], patrolSpeed: 1.25, patrolQuiet: false,
+      flankMinSize: 4, flankOffsetDeg: [70, 100], flankDistance: [18, 28], flankTimeout: 35,   // 기동조 측면 지점 (위협 기준 각·거리), 최대 시간
+      comms: { gap: 1.4, leaderlessMiss: 0.5, leaderlessRange: 25 },
+      confusion: [3, 6],
+      morale: {
+        start: 70, killed: -18, wounded: -7, leaderKilled: -25, pinnedRate: -1.6, superiorityRate: 0.5,
+        superiorityCount: 3, retreat: 35, rout: 15, max: 90,
+      },
+      retreatStep: [15, 25], retreatDistance: 90,
+    },
+    cover: { search: 22, minRadius: 0.17, standoff: 0.5, peek: 0.75, concealMin: 0.45, reevalDot: 0.5 },
+    wounded: { dragSpeed: 0.6, dragMaxSuppression: 30, dragRange: 30, dragDistance: [8, 14], helpInterval: [6, 12] },
+    // 매복: 플레이어가 trigger m 안에 들어오면 (관측자가 보고 있었거나 바로 옆에서 발소리를 들었으면) 동시에 사격.
+    //  분대장 = 관측자 (덤불 뒤에 웅크려 접근로를 봄, 개시 신호). 나머지는 엎드려 위장하거나 구덩이에서 머리만 내놓음
+    //  (구덩이 눈높이 ≈ 서기 눈 − pitDepth ≈ 0.5m — 풀 바닥층 위로 겨우 내다봄, 그래서 오솔길 가까이 pitOffset m).
+    //  자리는 오솔길에서 offset m, 그 자세 눈높이에서 kill zone 오솔길 점들(viewTargets, 플레이어 쪽이 음수)이
+    //  실제로 보이는 (시야 투과율) 곳을 candidates 개 중에 고름 (관측자는 2배).
+    ambush: {
+      trigger: [15, 25], pitChance: 0.5, pitDepth: 1.0, offset: [3, 8], pitOffset: [2, 5], spread: [6, 10], springDelay: [0.15, 0.45], hitAndRunMorale: 55,
+      candidates: 14, viewWeight: 3, viewTargets: [-16, -8, 0, 6],
+    },
+    search: { pairGap: 4, reconChance: 0.3, reconEvery: 8, giveUp: [60, 180], approach: 0.8 },
+    nav: { cell: 2, maxNodes: 9000, trailMul: 0.5, combatExposureMul: 1.6, blockSlopeDeg: 34, trunkBlockR: 0.45 },
+    spawn: { distances: [80, 100, 120, 150], sizes: [4, 5, 6, 7] },
+  },
+
+  // 4단계: 동물 정적 — 움직이는 사람 주변·총성 뒤 새·벌레 소리가 잦아든다 (그 자체가 단서)
+  wildlife: {
+    cell: 8,
+    moveRadius: 36, moveSpeed: 0.35,     // 이 속도 이상 움직이는 사람 주변 (m)
+    recover: [20, 40],                   // 조용히 이만큼 지나면 다시 살아남 (s)
+    gunshotRadius: 140, gunshotSilence: [30, 90],
+    minActivity: 0.06, rampTime: 6,      // 살아나는 데 걸리는 시간 (s)
+  },
+
   // 테스트 도구
   testRange: {
     // F8 표적 (플레이어 정면): 거리(m), 자세, cover = 수풀 뒤에 반쯤 가림, walk = 좌우로 걷기
@@ -761,6 +912,8 @@ export const CONFIG = {
     suppressionTest: 'F7', targets: 'F8',
     // 3단계: 붕대, 지혈대, 떨어뜨린 총 줍기, 피격 테스트 메뉴, 사망 후 다시 시작
     bandage: 'KeyH', tourniquet: 'KeyG', pickup: 'KeyF', hitTest: 'F9', restart: 'Enter',
+    // 4단계: AI 디버그 시각화, 적 스폰 메뉴 (F1·F5·F11·F12 는 브라우저 몫이라 쓰지 않음)
+    aiDebug: 'F2', spawnMenu: 'F4',
   },
 
   // 사용자 설정 기본값 (Esc 메뉴, localStorage 저장)

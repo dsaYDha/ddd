@@ -14,6 +14,8 @@
 //          'fall' {kind, dir} · 'death' {cause} · 'state' {state, prev}
 //  상태 읽기 (4단계): state ('idle'|'walk'|'turn'|'stunned'|'crawl'|'down'|'dead'), injuries.summary(), motor.getState()
 //  pose(): Hitboxes pose — fall {ax, az, angle, lift} 포함 (TargetMesh 가 같은 회전으로 그린다)
+//  4단계: 적 병사(ai/Soldier.js)가 이 클래스를 이어받는다 — _control(dt) (매 프레임 조종)·_afterMotor(dt) (부상·소리)를 바꿔 끼움.
+//   opts.suppression: true 면 제압 컴포넌트를 붙임 (병사), opts.faction: 'enemy' 등 (소음 출처 구분)
 // =====================================================================
 import { CONFIG } from '../config.js';
 import { EventEmitter } from '../core/EventEmitter.js';
@@ -49,7 +51,14 @@ export class HumanEntity extends EventEmitter {
     if (Number.isFinite(opts.y)) motor.position.y = Math.max(motor.position.y, opts.y);
     this.injuries = new Injuries({ rng: this.rng.fork ? this.rng.fork(3) : this.rng, motor, name: this.name });
     this._pose = { x: 0, y: 0, z: 0, yaw: 0, stance: st, stanceFrom: st, stanceProgress: 1, lean: 0, arms: this.arms, eyeHeight: motor.eyeHeight, bodyPitch: 0, fall: null };
-    this.person = combat.addPerson({ name: this.name, getPose: () => this.pose(), suppression: null, injuries: this.injuries, noiseSource: motor, data: opts.data ?? {} });
+    this.faction = opts.faction ?? 'neutral';
+    motor.faction = this.faction;
+    this.person = combat.addPerson({
+      name: this.name, getPose: () => this.pose(), suppression: opts.suppression ? undefined : null, injuries: this.injuries,
+      noiseSource: motor, data: opts.data ?? {},
+    });
+    this.person.faction = this.faction;
+    this.person.entity = this;
     this.walk = opts.walk ? {
       dir: 1, speed: CONFIG.testRange.walkSpeed, turnTime: CONFIG.testRange.walkTurnTime, center: { x: opts.x ?? 0, z: opts.z ?? 0 },
       ...opts.walk, turn: 0, turnFrom: 0, turnDelta: 0,
@@ -135,16 +144,26 @@ export class HumanEntity extends EventEmitter {
       m.update(dt);
       return;
     }
-    if (inj.alive) {
-      if (this.walk && this.state !== 'stunned') this._walkStep(dt);
-      else if (inj.stunned) { this._stopInput(); }
-      else if (this._crawlPending) { this._crawlPending = false; this._startCrawl(); }
-      else if (this.crawl) this._crawlStep(dt);
-      else if (this.state !== 'idle' && this.state !== 'walk') { this._stopInput(); this._setState('down'); }
-    }
+    if (inj.alive) this._control(dt);
     m.update(dt);
-    inj.update(dt, { speed: 0 });
-    inj.apply(m, null);
+    this._afterMotor(dt);
+  }
+
+  /** 매 프레임 조종 (표적: 걷기·기어가기) — 병사는 AI 두뇌로 바꿔 끼운다 */
+  _control(dt) {
+    const inj = this.injuries;
+    if (this.walk && this.state !== 'stunned') this._walkStep(dt);
+    else if (inj.stunned) { this._stopInput(); }
+    else if (this._crawlPending) { this._crawlPending = false; this._startCrawl(); }
+    else if (this.crawl) this._crawlStep(dt);
+    else if (this.state !== 'idle' && this.state !== 'walk') { this._stopInput(); this._setState('down'); }
+  }
+
+  /** 이동 뒤: 부상 갱신·효과 적용, 신음·핏자국 */
+  _afterMotor(dt, shooter = null) {
+    const inj = this.injuries, m = this.motor;
+    inj.update(dt, { speed: Math.hypot(m.velocity.x, m.velocity.z) });
+    inj.apply(m, shooter);
     if (!inj.alive) return;
     // 신음·거친 숨, 땅 핏자국
     if (inj.hasWounds) {

@@ -103,6 +103,10 @@ export class Shooter extends EventEmitter {
     } else {
       rest.rested = false; rest.kind = null; rest.object = null; rest.gap = NaN; rest.drop = 0;
     }
+    // 4단계: 양각대 무기(경기관총)는 엎드려 조준하면 거치
+    if (this.weaponData.bipod && aimHeld && P.stance === 'prone' && (P.stanceProgress ?? 1) >= 1 && speed < 0.1) {
+      rest.rested = true; rest.kind = 'bipod'; rest.object = 'bipod'; rest.drop = 0;
+    }
 
     // 조준 모델
     const s = this._aimIn;
@@ -181,8 +185,9 @@ export class Shooter extends EventEmitter {
     const dir = deviate(this.sight.dir, dev.dyaw, dev.dpitch + this.zeroAngle, v3());
     const origin = copy(v3(), this.muzzle.origin);
     const tracer = !!e.tracer;
+    const bipod = !!W.bipod && this.aim.rested && this.rest.kind === 'bipod';
     const projectile = this.combat
-      ? this.combat.fire(this.person, { origin, dir, speed: W.muzzleVelocity, weapon: W, tracer, timeOffset })
+      ? this.combat.fire(this.person, { origin, dir, speed: W.muzzleVelocity, weapon: W, tracer, timeOffset, bipod })
       : null;
     this.emit('fired', { origin, dir, ads: a.ads, burstIndex: e.burstIndex, projectile, timeOffset, tracer, mode: e.mode });
   }
