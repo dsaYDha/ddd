@@ -5,6 +5,8 @@ import { SURFACE, surfaceProps } from './Surfaces.js';
 import { NO_WATER, cellIndex, sampleBilinear } from './WorldGen.js';
 
 const RAD2DEG = 180 / Math.PI;
+const CIRCLE_PAD = 0.6; // 충돌 질의에 쓰는 최대 몸 반경
+const VEG_ATTEN = { type: 'vegetation', get tags() { return CONFIG.objects.shrub; } };
 
 /** 균일 격자 공간 인덱스 (원형 충돌체·지지형 장애물) */
 class UniformGrid {
@@ -60,9 +62,11 @@ export class WorldQuery {
     this.wetness = CONFIG.weather.presets.clear.wetness; // 날씨 시스템이 갱신
     this.rainIntensity = 0;
 
+    // 몸 반경만큼 넓혀 넣는다 → 위치가 속한 칸만 봐도 이웃 칸에 걸친 충돌체를 놓치지 않음
     this.circleGrid = new UniformGrid(data.size, 4);
+    const PAD = CIRCLE_PAD;
     for (const c of data.circles) {
-      this.circleGrid.insertAABB(c, c.x - c.r, c.z - c.r, c.x + c.r, c.z + c.r);
+      this.circleGrid.insertAABB(c, c.x - c.r - PAD, c.z - c.r - PAD, c.x + c.r + PAD, c.z + c.r + PAD);
     }
     this.supportGrid = new UniformGrid(data.size, 4);
     for (const s of data.supports) {
@@ -161,7 +165,7 @@ export class WorldQuery {
   /** 원기둥 충돌체 밖으로 밀어냄. 반환: 충돌했으면 true */
   resolveCircles(pos, radius, y0, y1) {
     let hit = false;
-    for (let iter = 0; iter < 3; iter++) {
+    for (let iter = 0; iter < 5; iter++) {
       let moved = false;
       const list = this.circleGrid.at(pos.x, pos.z);
       for (let k = 0; k < list.length; k++) {
@@ -211,9 +215,25 @@ export class WorldQuery {
     return j * n + i;
   }
   getCanopyCover(x, z) { return this.data.canopy[this._cIdx(x, z)]; }
+  /** 지점의 체적형 식생 요약: 최고 높이와 구간별 σ (디버그·AI용) */
   getCover(x, z) {
     const k = this._cIdx(x, z);
-    return { height: this.data.coverHeight[k], sigma: this.data.coverSigma[k] };
+    const NB = this.data.coverBandEdges.length - 1;
+    return { height: this.data.coverHeight[k], bands: this.data.coverBands.subarray(k * NB, k * NB + NB) };
+  }
+
+  /** 지면에서 bodyH 높이까지의 몸이 주변 식생에 가려지는 비율 (0~1) */
+  coverConcealment(x, z, bodyH) {
+    const E = this.data.coverBandEdges, B = this.data.coverBands;
+    const NB = E.length - 1;
+    const k = this._cIdx(x, z) * NB;
+    const h = Math.max(0.3, bodyH);
+    let c = 0;
+    for (let b = 0; b < NB && E[b] < h; b++) {
+      const o = Math.min(h, E[b + 1]) - E[b];
+      c += (o / h) * (1 - Math.exp(-B[k + b] * 1.6));
+    }
+    return c;
   }
 
   // ---------------------------------------------------------------
@@ -269,6 +289,8 @@ export class WorldQuery {
 
     // 2) 광선 진행 (0.2m 간격): 지형·장애물·물·체적형 식생·캐노피
     const STEP = 0.2;
+    const bandEdges = this.data.coverBandEdges, bands = this.data.coverBands;
+    const NB = bandEdges.length - 1, bandTop = bandEdges[NB];
     const sigCanopy = -Math.log(1 - T.canopy.visionBlock);
     const sigWater = -Math.log(1 - Math.min(0.99, T.water.visionBlock)) * 4;
     let inWater = false;
@@ -312,12 +334,17 @@ export class WorldQuery {
       inWater = under;
       if (vision) {
         if (under) { res.transmittance *= Math.exp(-sigWater * STEP); lastAtten = { type: 'water', tags: T.water }; }
-        // 풀·덤불·고사리 (체적형)
+        // 풀·덤불·고사리 (체적형): 지면 위 높이 구간의 σ
         const k = this._cIdx(px, pz);
-        const ch = this.data.coverHeight[k];
-        if (ch > 0 && py < th + ch) {
-          res.transmittance *= Math.exp(-this.data.coverSigma[k] * STEP);
-          lastAtten = { type: 'vegetation', tags: T.elephantGrass };
+        const hh = py - th;
+        if (hh < bandTop) {
+          let b = 0;
+          while (hh >= bandEdges[b + 1]) b++;
+          const sg = bands[k * NB + b];
+          if (sg > 0) {
+            res.transmittance *= Math.exp(-sg * STEP);
+            lastAtten = VEG_ATTEN;
+          }
         }
         // 캐노피
         const cv = this.data.canopy[k];

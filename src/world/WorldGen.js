@@ -5,11 +5,12 @@ import { RNG } from '../core/rng.js';
 import { clamp, lerp, smoothstep } from '../core/math.js';
 import { SURFACE } from './Surfaces.js';
 import { LAYOUT, Polyline, PaddyField, valleyFloor, riverCenterZ } from './MapLayout.js';
-import { BIG_TREE_VARIANTS } from './TreeVariants.js';
+import { placeFlora, buildGrids } from './Flora.js';
+import { NO_WATER, VEG } from './WorldConstants.js';
 
-export const NO_WATER = -10000;
-export const BRUSH_GRASS = 1;
-export const BRUSH_THICKET = 2;
+export { NO_WATER, VEG };
+export const BRUSH_GRASS = VEG.GRASS;
+export const BRUSH_THICKET = VEG.THICKET;
 
 export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
   const t0 = now();
@@ -32,8 +33,8 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
     surface: new Uint8Array(sN * sN),
     waterLevel: new Float32Array(sN * sN).fill(NO_WATER),
     waterKind: new Uint8Array(sN * sN),      // 0 없음, 1 개울, 2 늪, 3 논, 4 강
-    brushKind: new Uint8Array(sN * sN),
-    splat: new Uint8Array(sN * sN * 4),      // 셰이더용: R 진흙, G 흙길, B 습기, A 풀
+    vegKind: new Uint8Array(sN * sN),        // VEG.*
+    splat: new Uint8Array(sN * sN * 4),      // 셰이더용: R 진흙, G 흙길, B 습기, A 지피식물 밀도
     layout: {},
     placements: {},
     supports: [],
@@ -152,6 +153,12 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
   const cliff = LAYOUT.cliff;
   const R = LAYOUT.river;
 
+  // 3a. 기본 지형: 저지대 기준면 + 언덕·능선 + 잔기복
+  const streamInfo = (idx) => {
+    if (streamId[idx] < 0) return null;
+    const st = streams[streamId[idx]];
+    return { st, si: streamParam(st, streamS[idx]), sd: streamDist[idx] };
+  };
   for (let j = 0; j < hN; j++) {
     const z = -half + j * hRes;
     for (let i = 0; i < hN; i++) {
@@ -165,15 +172,10 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
       let hill = 1.5 + 9 * (0.5 + 0.5 * n1) + 7 * r1 + 1.1 * noise.fbm(x / 30, z / 30, 3);
       hill = Math.max(hill, 0.3);
 
-      // 저지대 마스크
+      // 저지대 마스크 (개울 골짜기는 좁고 가파르게)
       let m = 0;
-      const sd = streamDist[idx];
-      let st = null, si = 0;
-      if (streamId[idx] >= 0) {
-        st = streams[streamId[idx]];
-        si = streamParam(st, streamS[idx]);
-        m = Math.max(m, 1 - smoothstep(st.valleyW[si] * 0.4, st.valleyW[si] * 0.4 + 36, sd));
-      }
+      const si = streamInfo(idx);
+      if (si) m = Math.max(m, 1 - smoothstep(si.st.valleyW[si.si] * 0.3, si.st.valleyW[si.si] * 0.3 + 28, si.sd));
       const q = swampQ(x, z);
       m = Math.max(m, 1 - smoothstep(1.3, 2.9, q));
       const psd = paddy.signedDistance(x, z);
@@ -184,17 +186,39 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
       m = Math.max(m, 1 - smoothstep(R.halfWidth + 6, R.halfWidth + 50, Math.abs(rz)));
       LOW[idx] = m;
 
-      const micro = 0.14 * noise.fbm(x / 4.5, z / 4.5, 2) + 0.35 * noise.fbm(x / 11, z / 11, 2) * (1 - m * 0.6);
-      let h = V + (1 - m) * hill + micro;
+      // 잔기복: 여러 겹 노이즈 (숲 바닥의 둔덕·골)
+      const micro = 0.14 * noise.fbm(x / 4.5, z / 4.5, 2) + 0.35 * noise.fbm(x / 11, z / 11, 2) * (1 - m * 0.6)
+        + 0.11 * noiseB.fbm(x / 2.6 + 31, z / 2.6 - 7, 2) * (1 - m * 0.7);
+      H[idx] = V + (1 - m) * hill + micro;
+    }
+  }
+
+  // 3b. 물방울 침식: 언덕 사면에 빗물이 판 골(침식곡)과 쌓인 퇴적
+  erodeTerrain(H, LOW, hN, rng.fork(77), CONFIG.world.erosion);
+  data.timings.erosion = now() - t0;
+
+  // 3c. 지형 요소: 개울 수로·둑, 늪, 논, 강, 절벽
+  for (let j = 0; j < hN; j++) {
+    const z = -half + j * hRes;
+    for (let i = 0; i < hN; i++) {
+      const x = -half + i * hRes;
+      const idx = j * hN + i;
+      const V = valleyFloor(x, z);
+      let h = H[idx];
+      const info = streamInfo(idx);
+      const q = swampQ(x, z);
+      const psd = paddy.signedDistance(x, z);
+      const rz = z - riverCenterZ(x);
 
       // 개울 수로 + 둑
-      if (st) {
+      if (info) {
+        const { st, si, sd } = info;
         const w = st.w[si], bw = st.bankW[si], drop = st.drop[si], depth = st.depth[si];
         const level = st.level[si];
         const swampSuppress = st.name === 'west' ? smoothstep(1.0, 1.45, q) : 1;
         let target = null;
         if (sd < w) target = level - depth * (1 - (sd / w) ** 2);
-        else if (sd < w + bw) target = level + drop * smoothstep(w, w + bw, sd) + (h - V) * smoothstep(w, w + bw, sd) * 0;
+        else if (sd < w + bw) target = level + drop * smoothstep(w, w + bw, sd);
         if (target !== null) {
           // 둑 바깥 쪽 원래 지형과 매끄럽게
           const outer = smoothstep(w + bw * 0.8, w + bw + 2, sd);
@@ -217,15 +241,12 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
 
       // 논: 칸마다 평평한 바닥, 바깥은 논둑 높이에 맞춰 이어짐
       if (psd < 22) {
+        const [u, v] = paddy.toLocal(x, z);
+        const uu = clamp(u, -paddy.halfU + 0.01, paddy.halfU - 0.01);
+        const vv = clamp(v, -paddy.halfV + 0.01, paddy.halfV - 0.01);
         if (psd <= 0.4) {
-          const [u, v] = paddy.toLocal(x, z);
-          const uu = clamp(u, -paddy.halfU + 0.01, paddy.halfU - 0.01);
-          const vv = clamp(v, -paddy.halfV + 0.01, paddy.halfV - 0.01);
           h = paddy.floorAtLocal(uu, vv) + 0.012 * noise.simplex(x * 0.7, z * 0.7);
         } else {
-          const [u, v] = paddy.toLocal(x, z);
-          const uu = clamp(u, -paddy.halfU + 0.01, paddy.halfU - 0.01);
-          const vv = clamp(v, -paddy.halfV + 0.01, paddy.halfV - 0.01);
           const rim = paddy.floorAtLocal(uu, vv) + paddy.dikeHeight - 0.02;
           h = lerp(rim, h, smoothstep(2.5, 22, psd));
         }
@@ -290,8 +311,9 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
   const surface = data.surface;
   const WL = data.waterLevel;
   const WK = data.waterKind;
-  const BK = data.brushKind;
+  const VK = data.vegKind;
   const SP = data.splat;
+  const VC = CONFIG.vegetation;
 
   const trailMud = (tr, s) => {
     const n = noise.fbm(s / 18, 77 + tr.id * 5, 2);
@@ -306,6 +328,11 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
     tr.mudCache = new Float32Array(n);
     for (let k = 0; k < n; k++) tr.mudCache[k] = trailMud(tr, k * 0.5);
   }
+  const slopeDegAt = (x, z) => {
+    const dx = (heightAt(x + 0.75, z) - heightAt(x - 0.75, z)) / 1.5;
+    const dz = (heightAt(x, z + 0.75) - heightAt(x, z - 0.75)) / 1.5;
+    return Math.atan(Math.hypot(dx, dz)) * 57.29578;
+  };
 
   for (let j = 0; j < sN; j++) {
     const z = -half + (j + 0.5) * sRes;
@@ -313,8 +340,9 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
       const x = -half + (i + 0.5) * sRes;
       const c = j * sN + i;
       const ground = heightAt(x, z);
-      let surf = SURFACE.LEAF_LITTER;
-      let mud = 0, dirt = 0, moist = 0, grass = 0;
+      let surf = SURFACE.GROUND_COVER;
+      let veg = VEG.NONE;
+      let mud = 0, dirt = 0, moist = 0, cover = 0;
       let wl = NO_WATER, wk = 0;
 
       // 수위
@@ -345,6 +373,7 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
         else if (depth > 0.36) surf = SURFACE.SHALLOW_WATER;
         else surf = SURFACE.DEEP_MUD;
         mud = 1; moist = 1;
+        if (depth < 0.22) veg = VEG.REED;
       } else if (depth > 0.55) {
         surf = SURFACE.DEEP_WATER; mud = 0.6; moist = 1;
       } else if (depth > 0.04) {
@@ -354,23 +383,30 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
         const tr = td < 4 ? trails[trailId[c]] : null;
         const inTrail = tr && td < tr.halfWidth;
         const bankZone = st && sd < st.w[si] + st.bankW[si] + 1.2 && !(st.name === 'west' && q < 1.5);
+        const low = sampleBilinear(LOW, hN, hRes, half, x, z);
         if (inTrail) {
           const mudLevel = tr.mudCache[clamp(Math.round(trailS[c] / 0.5), 0, tr.mudCache.length - 1)];
           if (mudLevel > 0.62) { surf = SURFACE.SHALLOW_MUD; mud = 0.75; moist = 1; }
           else if (mudLevel > 0.4) { surf = SURFACE.WET_EARTH; mud = 0.3; moist = 0.8; }
           else { surf = SURFACE.PACKED_DIRT; moist = 0.15; }
           dirt = 1 - smoothstep(tr.halfWidth * 0.7, tr.halfWidth + 0.4, td);
+          // 밟혀서 식물이 거의 없음 (가장자리만 드문드문)
+          cover = 0.25 * smoothstep(tr.halfWidth * 0.6, tr.halfWidth, td);
+          if (cover > 0.12) veg = VEG.COVER;
         } else if (bankZone) {
-          if (sd < st.w[si] + 0.9) { surf = SURFACE.SHALLOW_MUD; mud = 0.8; moist = 1; }
-          else { surf = SURFACE.WET_EARTH; mud = 0.3; moist = 0.85; }
+          // 개울가: 물가 진흙엔 물풀, 둑엔 양치류·물풀
+          if (sd < st.w[si] + 0.9) { surf = SURFACE.SHALLOW_MUD; mud = 0.8; moist = 1; veg = VEG.REED; cover = 0.35; }
+          else { surf = SURFACE.WET_EARTH; mud = 0.25; moist = 0.85; veg = VEG.BANK; cover = 0.8; }
         } else if (q < 1.2) {
-          surf = SURFACE.SHALLOW_MUD; mud = 0.8; moist = 1;
+          surf = SURFACE.SHALLOW_MUD; mud = 0.8; moist = 1; veg = VEG.REED; cover = 0.4;
         } else if (q < 1.45) {
-          surf = SURFACE.WET_EARTH; mud = 0.3; moist = 0.8;
+          surf = SURFACE.WET_EARTH; mud = 0.25; moist = 0.8; veg = VEG.BANK; cover = 0.85;
         } else if (Math.abs(rz) < R.halfWidth + 5.5) {
-          surf = Math.abs(rz) < R.halfWidth + 4.5 ? SURFACE.SHALLOW_MUD : SURFACE.WET_EARTH; mud = 0.6; moist = 1;
+          const near = Math.abs(rz) < R.halfWidth + 4.5;
+          surf = near ? SURFACE.SHALLOW_MUD : SURFACE.WET_EARTH; mud = 0.6; moist = 1;
+          veg = near ? VEG.REED : VEG.BANK; cover = near ? 0.35 : 0.75;
         } else {
-          // 풀숲 / 덤불
+          // 숲 바닥: 하층 밀도장에 따라 지피식물 / 덤불 / 밀집 덤불 / 키 큰 풀
           let gb = -1;
           for (let b = 0; b < blobs.length; b++) {
             const bl = blobs[b];
@@ -378,31 +414,49 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
             if (Math.abs(dx) > bl.r * 1.5 || Math.abs(dz) > bl.r * 1.5) continue;
             gb = Math.max(gb, 1 - Math.hypot(dx, dz) / bl.r - 0.28 * noise.fbm(x / 8, z / 8, 2));
           }
-          const low = sampleBilinear(LOW, hN, hRes, half, x, z);
-          const thicket = noiseB.fbm(x / 36 + 50, z / 36 - 20, 3) - 0.38 + 0.12 * noise.fbm(x / 7, z / 7, 2);
+          const thicket = noiseB.fbm(x / 36 + 50, z / 36 - 20, 3) - VC.thicketThreshold + 0.12 * noise.fbm(x / 7, z / 7, 2);
           const shoulder = tr && td < tr.halfWidth + 1.4;
+          let und = 0.5 + 0.36 * noise.fbm(x / 26 + 17, z / 26 - 9, 3) + 0.16 * noiseB.fbm(x / 7.5 + 3, z / 7.5 + 11, 2) + 0.08 * low;
+          if (tr) und += 0.14 * (1 - smoothstep(tr.halfWidth + 1, tr.halfWidth + 7, td));           // 길가는 빛이 들어 덤불이 많음
+          if (st) und += 0.1 * (1 - smoothstep(st.w[si] + st.bankW[si], st.w[si] + st.bankW[si] + 12, sd));
+          const nCov = 0.5 + 0.5 * noise.fbm(x / 6 + 70, z / 6 - 30, 2);
           if (gb > 0 && !shoulder && paddy.signedDistance(x, z) > 1.5) {
-            surf = SURFACE.BRUSH; BK[c] = BRUSH_GRASS; grass = 1;
+            surf = SURFACE.BRUSH; veg = VEG.GRASS; cover = 0.9;
           } else if (thicket > 0 && low < 0.6 && !shoulder) {
-            surf = SURFACE.BRUSH; BK[c] = BRUSH_THICKET; grass = 0.5;
+            surf = SURFACE.BRUSH; veg = VEG.THICKET; cover = 1;
           } else if (shoulder && tr.mudCache[clamp(Math.round(trailS[c] / 0.5), 0, tr.mudCache.length - 1)] > 0.5) {
-            surf = SURFACE.WET_EARTH; mud = 0.2; moist = 0.7; dirt = 0.3;
+            surf = SURFACE.WET_EARTH; mud = 0.2; moist = 0.7; dirt = 0.3; veg = VEG.BANK;
+            cover = 0.3 + 0.4 * smoothstep(tr.halfWidth, tr.halfWidth + 1.4, td);
+          } else if (shoulder) {
+            surf = SURFACE.GROUND_COVER; veg = VEG.COVER;
+            cover = 0.35 + 0.45 * smoothstep(tr.halfWidth, tr.halfWidth + 1.4, td);
+          } else if (slopeDegAt(x, z) > 42) {
+            surf = SURFACE.LEAF_LITTER; veg = VEG.LITTER; cover = 0.25;            // 매우 가파른 사면: 흙이 드러남
+          } else if (slopeDegAt(x, z) > 33) {
+            surf = SURFACE.GROUND_COVER; veg = VEG.COVER; cover = 0.5 + 0.2 * nCov; // 가파른 사면: 지피식물 사이로 흙이 일부 보임
           } else if (low > 0.8 && noise.fbm(x / 14 + 9, z / 14 + 2, 2) > 0.25) {
-            surf = SURFACE.WET_EARTH; moist = 0.7; mud = 0.15;
+            surf = SURFACE.WET_EARTH; moist = 0.7; mud = 0.12; veg = VEG.BANK; cover = 0.85;
+          } else if (noiseB.fbm(x / 22 + 140, z / 22 - 60, 2) - 0.25 * und > VC.litterPatchThreshold) {
+            // 짙은 그늘의 낙엽 바닥 (어린 묘목·이끼가 드문드문)
+            surf = SURFACE.LEAF_LITTER; veg = VEG.LITTER; cover = 0.45 + 0.15 * nCov;
+          } else if (und > VC.shrubThreshold) {
+            surf = SURFACE.SHRUB; veg = VEG.SHRUB; cover = 0.9 + 0.1 * nCov;
           } else {
-            moist = 0.25 * low;
+            surf = SURFACE.GROUND_COVER; veg = VEG.COVER; cover = 0.78 + 0.22 * nCov;
           }
           if (shoulder) dirt = Math.max(dirt, 0.35 * (1 - smoothstep(tr.halfWidth, tr.halfWidth + 1.4, td)));
+          moist = Math.max(moist, 0.25 * low);
         }
       }
 
       surface[c] = surf;
+      VK[c] = veg;
       WL[c] = wl > ground - 0.05 || wk === 3 ? wl : NO_WATER;
       WK[c] = WL[c] !== NO_WATER ? wk : 0;
       SP[c * 4] = (clamp(mud, 0, 1) * 255) | 0;
       SP[c * 4 + 1] = (clamp(dirt, 0, 1) * 255) | 0;
       SP[c * 4 + 2] = (clamp(moist, 0, 1) * 255) | 0;
-      SP[c * 4 + 3] = (clamp(grass, 0, 1) * 255) | 0;
+      SP[c * 4 + 3] = (clamp(cover, 0, 1) * 255) | 0;
     }
   }
   data.timings.surface = now() - t0;
@@ -418,444 +472,32 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
   const surfAt = (x, z) => surface[cellIndex(x, z, sN, sRes, half)];
   const waterAt = (x, z) => WL[cellIndex(x, z, sN, sRes, half)];
   const trailDistAt = (x, z) => trailDist[cellIndex(x, z, sN, sRes, half)];
-  const brushAt = (x, z) => BK[cellIndex(x, z, sN, sRes, half)];
+  const vegAt = (x, z) => VK[cellIndex(x, z, sN, sRes, half)];
   const lowAt = (x, z) => sampleBilinear(LOW, hN, hRes, half, x, z);
+  const streamDistAt = (x, z) => sampleBilinear(streamDist, hN, hRes, half, x, z);
   const start = W.start;
-  const inBounds = (x, z, m = 4) => Math.abs(x) < half - m && Math.abs(z) < half - m;
-  const isDryGround = (s) => s === SURFACE.LEAF_LITTER || s === SURFACE.WET_EARTH || s === SURFACE.BRUSH || s === SURFACE.PACKED_DIRT;
-  const outsideCliff = (x, z) => z > -half + LAYOUT.cliff.width + 2 && x > -half + LAYOUT.cliff.width + 2;
 
   // -------------------------------------------------------------
-  // 5. 식생·장애물 배치
+  // 5~6. 식생·장애물 배치 + 캐노피·은폐·차폐(AO) 격자 (Flora.js)
   // -------------------------------------------------------------
-  const P = data.placements;
-  const circles = data.circles;
-  const supports = data.supports;
-  const T = CONFIG.objects;
-
-  // 원형 충돌체 공간 해시 (배치 중 겹침 방지)
-  const occ = new SpatialHash(4);
-  const free = (x, z, r) => !occ.any(x, z, r);
-
-  // --- 큰 나무 (상층)
-  P.bigTree = [];
-  {
-    const r = rng.fork(1);
-    jitterGrid(r, half, 10.5, (x, z) => {
-      if (!inBounds(x, z, 3) || !outsideCliff(x, z) || x > LAYOUT.bambooBelt.xStart - 2) return;
-      const s = surfAt(x, z);
-      if (!isDryGround(s) || s === SURFACE.PACKED_DIRT) return;
-      if (brushAt(x, z) === BRUSH_GRASS) return;
-      if (trailDistAt(x, z) < 3.5 || Math.hypot(x - start.x, z - start.z) < 7) return;
-      if (paddy.signedDistance(x, z) < 6 || swampQ(x, z) < 1.25) return;
-      if (waterAt(x, z) !== NO_WATER) return;
-      if (slopeAt(x, z) > 36) return;
-      const low = lowAt(x, z);
-      if (!r.chance(lerp(0.88, 0.4, low))) return;
-      const variant = r.int(0, BIG_TREE_VARIANTS.length - 1);
-      const V = BIG_TREE_VARIANTS[variant];
-      const scale = r.range(0.85, 1.22);
-      const trunkR = V.trunkR * scale;
-      const colR = trunkR * 1.25;
-      if (!free(x, z, colR + 1.6)) return;
-      const tree = {
-        x, z, y: heightAt(x, z) - 0.15, rot: r.range(0, Math.PI * 2), variant, scale,
-        height: V.height * scale, trunkR, crownR: V.crownR * scale, rank: r.float(),
-      };
-      P.bigTree.push(tree);
-      occ.add(x, z, colR);
-      circles.push({ x, z, r: colR, y0: tree.y - 1, y1: tree.y + tree.height, type: 'bigTree', tags: T.bigTree });
-      // 판근 — 렌더링과 같은 형태의 낮은 지지형 장애물 (끝으로 갈수록 낮아짐)
-      const cr = Math.cos(tree.rot), sr = Math.sin(tree.rot);
-      for (const f of V.fins) {
-        // 렌더링 좌표계와 동일: 로컬 (cos a, sin a) 를 Y축 회전 rot 으로
-        const lx = Math.cos(f.a), lz = Math.sin(f.a);
-        const wx = lx * cr + lz * sr, wz = -lx * sr + lz * cr;
-        const span = f.span * scale;
-        const ax = x + wx * trunkR * 0.7, az = z + wz * trunkR * 0.7;
-        const bx = x + wx * (trunkR + span), bz = z + wz * (trunkR + span);
-        supports.push({
-          kind: 'capsule', type: 'root', tags: T.root, fin: true,
-          ax, az, ay: tree.y + f.h * scale * 0.85, bx, bz, by: heightAt(bx, bz) - 0.05, r: 0.12 * scale + 0.04,
-        });
-      }
-    });
-  }
-
-  // --- 드러난 큰 뿌리
-  P.root = [];
-  {
-    const r = rng.fork(2);
-    for (const tree of P.bigTree) {
-      if (!r.chance(0.6)) continue;
-      const n = r.int(1, 3);
-      for (let k = 0; k < n; k++) {
-        const a = r.range(0, Math.PI * 2);
-        const big = r.chance(0.18);
-        const rad = big ? r.range(0.3, 0.37) : r.range(0.1, 0.24);
-        const len = r.range(2.5, 5.5);
-        const ax = tree.x + Math.cos(a) * (tree.trunkR + 0.2), az = tree.z + Math.sin(a) * (tree.trunkR + 0.2);
-        const bx = ax + Math.cos(a + r.range(-0.4, 0.4)) * len, bz = az + Math.sin(a + r.range(-0.4, 0.4)) * len;
-        if (waterAt(bx, bz) !== NO_WATER || trailDistAt(bx, bz) < 0.8) continue;
-        const ay = heightAt(ax, az) + rad * 0.25, by = heightAt(bx, bz) - rad * 0.5;
-        const sup = { kind: 'capsule', type: 'root', tags: T.root, ax, az, ay, bx, bz, by, r: rad };
-        supports.push(sup);
-        P.root.push(sup);
-      }
-    }
-  }
-
-  // --- 쓰러진 통나무
-  P.log = [];
-  {
-    const r = rng.fork(3);
-    const addLog = (cx, cz, angle, len, rad, forced = false) => {
-      const dx = Math.cos(angle) * len / 2, dz = Math.sin(angle) * len / 2;
-      const ax = cx - dx, az = cz - dz, bx = cx + dx, bz = cz + dz;
-      if (!forced) {
-        for (let k = 0; k <= 4; k++) {
-          const px = lerp(ax, bx, k / 4), pz = lerp(az, bz, k / 4);
-          if (!inBounds(px, pz, 6) || waterAt(px, pz) !== NO_WATER || paddy.signedDistance(px, pz) < 2) return false;
-          if (trailDistAt(px, pz) < 1.5 || occ.any(px, pz, rad + 0.2)) return false;
-          const s = surfAt(px, pz);
-          if (s === SURFACE.DEEP_MUD) return false;
-        }
-        if (Math.abs(heightAt(ax, az) - heightAt(bx, bz)) > len * 0.4) return false;
-        // 가운데가 뜨거나 묻히지 않게
-        if (Math.abs(heightAt(cx, cz) - (heightAt(ax, az) + heightAt(bx, bz)) / 2) > rad * 0.6) return false;
-      }
-      let ay = heightAt(ax, az) + rad * 0.72, by = heightAt(bx, bz) + rad * 0.72;
-      if (forced) {
-        // 오솔길을 가로지르는 통나무: 오솔길 중앙 높이에 맞춤
-        const c = heightAt(cx, cz) + rad * 0.72;
-        ay = Math.max(c, Math.min(ay, c + 0.25));
-        by = Math.max(c, Math.min(by, c + 0.25));
-      }
-      const log = { kind: 'capsule', type: 'log', tags: T.log, ax, az, ay, bx, bz, by, r: rad, rot: r.range(0, 6.28), variant: r.int(0, 1) };
-      supports.push(log);
-      P.log.push(log);
-      return true;
-    };
-    // 시작 지점 오솔길을 가로막는 통나무 (점프 테스트용)
-    const t1 = trails[0];
-    {
-      const s = 13;
-      const [px, pz] = t1.line.pointAt(s);
-      const [qx, qz] = t1.line.pointAt(s + 1);
-      const ang = Math.atan2(qz - pz, qx - px) + Math.PI / 2;
-      addLog(px, pz, ang + 0.2, 5, 0.36, true);
-    }
-    {
-      const t4 = trails[3];
-      const [px, pz] = t4.line.pointAt(26);
-      const [qx, qz] = t4.line.pointAt(27);
-      addLog(px, pz, Math.atan2(qz - pz, qx - px) + Math.PI / 2 - 0.3, 5, 0.3, true);
-    }
-    let tries = 0;
-    while (P.log.length < 150 && tries++ < 4000) {
-      const x = r.range(-half + 30, half - 30), z = r.range(-half + 30, half - 32);
-      const s = surfAt(x, z);
-      if (!isDryGround(s) || slopeAt(x, z) > 24) continue;
-      const rad = r.chance(0.3) ? r.range(0.18, 0.26) : r.range(0.28, 0.5);
-      addLog(x, z, r.range(0, Math.PI), r.range(4, 11), rad);
-    }
-  }
-
-  // --- 바위
-  P.rock = [];
-  {
-    const r = rng.fork(4);
-    const addRock = (x, z, size, inWater = false) => {
-      const rx = size * r.range(0.8, 1.25), rz = size * r.range(0.7, 1.1), ry = size * r.range(0.45, 0.8);
-      if (occ.any(x, z, Math.max(rx, rz) * 0.8)) return;
-      const y = heightAt(x, z) - ry * (inWater ? 0.25 : 0.38);
-      const rock = { kind: 'ellipsoid', type: 'rock', tags: T.rock, cx: x, cy: y, cz: z, rx, ry, rz, yaw: r.range(0, Math.PI * 2), variant: r.int(0, 3), seed: r.int(0, 1e6) };
-      supports.push(rock);
-      P.rock.push(rock);
-    };
-    // 개울 속·둑의 바위
-    for (const st of streams) {
-      for (let s = 10; s < st.line.length - 15; s += r.range(4, 11)) {
-        if (st.fords.some((f) => Math.abs(f - s) < 9)) continue;
-        const [px, pz] = st.line.pointAt(s);
-        if (st.name === 'west' && swampQ(px, pz) < 1.6) continue;
-        const off = r.range(-st.w[Math.round(s)] - 2, st.w[Math.round(s)] + 2);
-        const [qx, qz] = st.line.pointAt(s + 1);
-        const tx = qx - px, tz = qz - pz;
-        addRock(px - tz * off, pz + tx * off, r.range(0.35, 1.3), true);
-      }
-    }
-    let tries = 0;
-    while (P.rock.length < 300 && tries++ < 5000) {
-      const x = r.range(-half + 25, half - 25), z = r.range(-half + 25, half - 30);
-      const s = surfAt(x, z);
-      if (!isDryGround(s) || trailDistAt(x, z) < 1.6 || paddy.signedDistance(x, z) < 3) continue;
-      const sl = slopeAt(x, z);
-      if (!r.chance(0.25 + sl / 30)) continue;
-      addRock(x, z, r.chance(0.15) ? r.range(1.2, 2.4) : r.range(0.25, 0.9));
-    }
-  }
-
-  // --- 야자수 (중층)
-  P.palm = [];
-  {
-    const r = rng.fork(5);
-    jitterGrid(r, half, 7.5, (x, z) => {
-      if (!inBounds(x, z, 5) || !outsideCliff(x, z) || x > LAYOUT.bambooBelt.xStart - 2) return;
-      const s = surfAt(x, z);
-      if (!(isDryGround(s) || s === SURFACE.SHALLOW_MUD) || s === SURFACE.PACKED_DIRT) return;
-      if (trailDistAt(x, z) < 2 || waterAt(x, z) !== NO_WATER) return;
-      const q = swampQ(x, z), psd = paddy.signedDistance(x, z);
-      if (psd < 2.5) return;
-      const sd = sampleBilinear(streamDist, hN, hRes, half, x, z);
-      let p = 0.07;
-      if (q > 1.0 && q < 2.1) p = 0.55;
-      else if (psd < 16) p = 0.42;
-      else if (sd < 14) p = 0.32;
-      if (!r.chance(p) || !free(x, z, 1.4)) return;
-      const palm = { x, z, y: heightAt(x, z), rot: r.range(0, 6.28), height: r.range(6, 11.5), lean: r.range(0.03, 0.22), variant: r.int(0, 1), rank: r.float() };
-      P.palm.push(palm);
-      occ.add(x, z, 0.25);
-      circles.push({ x, z, r: 0.22, y0: palm.y - 0.5, y1: palm.y + palm.height, type: 'palm', tags: T.palm });
-    });
-  }
-
-  // --- 바나나 나무
-  P.banana = [];
-  {
-    const r = rng.fork(6);
-    jitterGrid(r, half, 6, (x, z) => {
-      if (!inBounds(x, z, 6) || !outsideCliff(x, z) || x > LAYOUT.bambooBelt.xStart - 2) return;
-      const psd = paddy.signedDistance(x, z);
-      const low = lowAt(x, z);
-      let p = 0.035;
-      if (psd > 2.5 && psd < 15) p = 0.5;
-      else if (low > 0.6) p = 0.12;
-      if (trailDistAt(x, z) < 3.5 && low > 0.4) p += 0.15;
-      if (!r.chance(p)) return;
-      const n = r.int(2, 4);
-      for (let k = 0; k < n; k++) {
-        const bx = x + r.range(-1.6, 1.6), bz = z + r.range(-1.6, 1.6);
-        const s = surfAt(bx, bz);
-        if (!isDryGround(s) || s === SURFACE.PACKED_DIRT || trailDistAt(bx, bz) < 1.6 || waterAt(bx, bz) !== NO_WATER) continue;
-        if (paddy.signedDistance(bx, bz) < 2.2 || !free(bx, bz, 0.7)) continue;
-        const b = { x: bx, z: bz, y: heightAt(bx, bz), rot: r.range(0, 6.28), height: r.range(2.4, 4.2), variant: r.int(0, 1), rank: r.float() };
-        P.banana.push(b);
-        occ.add(bx, bz, 0.2);
-        circles.push({ x: bx, z: bz, r: 0.14, y0: b.y - 0.3, y1: b.y + b.height, type: 'banana', tags: T.banana });
-      }
-    });
-  }
-
-  // --- 대나무 군락
-  P.bamboo = [];
-  {
-    const r = rng.fork(7);
-    const groves = LAYOUT.bambooGroves.map((g) => ({ ...g }));
-    for (const st of streams) {
-      for (let s = 20; s < st.line.length - 20; s += r.range(18, 34)) {
-        if (!r.chance(0.5)) continue;
-        if (st.fords.some((f) => Math.abs(f - s) < 14)) continue;
-        const [px, pz] = st.line.pointAt(s);
-        const [qx, qz] = st.line.pointAt(s + 1);
-        const side = r.sign();
-        const off = side * (st.w[Math.round(s)] + st.bankW[Math.round(s)] + r.range(3, 8));
-        groves.push({ x: px - (qz - pz) * off, z: pz + (qx - px) * off, r: r.range(4, 7) });
-      }
-    }
-    for (let k = 0; k < 10; k++) groves.push({ x: r.range(-160, 150), z: r.range(-160, 150), r: r.range(4, 7) });
-    for (const g of groves) {
-      const n = Math.round(g.r * 0.8) + r.int(1, 3);
-      for (let k = 0; k < n; k++) {
-        const a = r.range(0, 6.28), d = Math.sqrt(r.float()) * g.r;
-        const x = g.x + Math.cos(a) * d, z = g.z + Math.sin(a) * d;
-        if (!inBounds(x, z, 6) || !outsideCliff(x, z) || x > LAYOUT.bambooBelt.xStart - 3) continue;
-        const s = surfAt(x, z);
-        if (!isDryGround(s) || s === SURFACE.PACKED_DIRT || trailDistAt(x, z) < 2.6 || waterAt(x, z) !== NO_WATER) continue;
-        if (paddy.signedDistance(x, z) < 4 || Math.hypot(x - start.x, z - start.z) < 6) continue;
-        const cr = r.range(0.85, 1.3);
-        if (!free(x, z, cr + 0.15)) continue;
-        const b = { x, z, y: heightAt(x, z), rot: r.range(0, 6.28), height: r.range(9, 15), radius: cr, variant: r.int(0, 1), rank: r.float() };
-        P.bamboo.push(b);
-        occ.add(x, z, cr);
-        circles.push({ x, z, r: cr, y0: b.y - 0.5, y1: b.y + b.height, type: 'bamboo', tags: T.bamboo });
-      }
-    }
-  }
-
-  // --- 어린 나무 (중하층, 숲을 빽빽하게)
-  P.sapling = [];
-  {
-    const r = rng.fork(13);
-    jitterGrid(r, half, 4.2, (x, z) => {
-      if (!inBounds(x, z, 4) || !outsideCliff(x, z) || x > LAYOUT.bambooBelt.xStart - 2) return;
-      const s = surfAt(x, z);
-      if (!(s === SURFACE.LEAF_LITTER || s === SURFACE.WET_EARTH || (s === SURFACE.BRUSH && brushAt(x, z) === BRUSH_THICKET))) return;
-      if (trailDistAt(x, z) < 1.8 || waterAt(x, z) !== NO_WATER || paddy.signedDistance(x, z) < 4 || swampQ(x, z) < 1.2) return;
-      if (slopeAt(x, z) > 35 || Math.hypot(x - start.x, z - start.z) < 3) return;
-      const low = lowAt(x, z);
-      if (!r.chance(lerp(0.6, 0.32, low)) || !free(x, z, 0.8)) return;
-      const height = r.range(3, 8);
-      const sp = { x, z, y: heightAt(x, z), rot: r.range(0, 6.28), height, variant: r.int(0, 2), rank: r.float() };
-      P.sapling.push(sp);
-      occ.add(x, z, 0.12);
-      circles.push({ x, z, r: 0.07, y0: sp.y - 0.3, y1: sp.y + height, type: 'sapling', tags: T.sapling });
-      circles.push({ x, z, r: height * 0.22, y0: sp.y + height * 0.42, y1: sp.y + height, type: 'saplingCrown', tags: T.saplingCrown });
-    });
-  }
-
-  // --- 동쪽 가장자리 밀집 대나무 띠 (통과 불가)
-  P.bambooDense = [];
-  {
-    const r = rng.fork(8);
-    const x0 = LAYOUT.bambooBelt.xStart;
-    // 충돌체: 촘촘한 격자 (몸 반경 포함 빈틈 없음)
-    for (let x = x0; x <= half + 1; x += 2) {
-      for (let z = -half; z <= half; z += 2) {
-        const cx = x + r.range(-0.25, 0.25), cz = z + r.range(-0.25, 0.25);
-        circles.push({ x: cx, z: cz, r: 1.6, y0: -50, y1: 200, type: 'bambooDense', tags: T.bambooDense, hidden: true });
-      }
-    }
-    // 시각용 군락
-    for (let x = x0 + 0.5; x <= x0 + LAYOUT.bambooBelt.visualDepth; x += 2.8) {
-      for (let z = -half + 1; z <= half - 1; z += 2.8) {
-        const cx = x + r.range(-0.9, 0.9), cz = z + r.range(-0.9, 0.9);
-        if (Math.abs(z - riverCenterZ(cx)) < R.halfWidth + 1) continue;
-        P.bambooDense.push({ x: cx, z: cz, y: heightAt(cx, cz), rot: r.range(0, 6.28), height: r.range(10, 16), radius: 1.3, variant: r.int(0, 1), rank: r.float() });
-      }
-    }
-  }
-
-  // --- 코끼리풀 / 덤불 / 고사리 (하층)
-  P.grass = [];
-  P.shrub = [];
-  P.fern = [];
-  {
-    const r = rng.fork(9);
-    jitterGrid(r, half, 1.15, (x, z) => {
-      if (!inBounds(x, z, 2)) return;
-      const c = cellIndex(x, z, sN, sRes, half);
-      if (BK[c] !== BRUSH_GRASS || surface[c] !== SURFACE.BRUSH) return;
-      if (occ.any(x, z, 0.1)) return;
-      P.grass.push({ x, z, y: heightAt(x, z), rot: r.range(0, 6.28), height: r.range(1.5, 2.5), variant: r.int(0, 2), rank: r.float() });
-    });
-    const r2 = rng.fork(10);
-    jitterGrid(r2, half, 1.7, (x, z) => {
-      if (!inBounds(x, z, 2)) return;
-      const c = cellIndex(x, z, sN, sRes, half);
-      if (BK[c] !== BRUSH_THICKET || surface[c] !== SURFACE.BRUSH) return;
-      if (occ.any(x, z, 0.2)) return;
-      P.shrub.push({ x, z, y: heightAt(x, z), rot: r2.range(0, 6.28), height: r2.range(1.0, 1.9), variant: r2.int(0, 2), rank: r2.float() });
-    });
-    const r3 = rng.fork(11);
-    jitterGrid(r3, half, 1.9, (x, z) => {
-      if (!inBounds(x, z, 2) || x > LAYOUT.bambooBelt.xStart + 2) return;
-      const s = surfAt(x, z);
-      if (s !== SURFACE.LEAF_LITTER && s !== SURFACE.WET_EARTH) return;
-      if (trailDistAt(x, z) < 1.4 || waterAt(x, z) !== NO_WATER || paddy.signedDistance(x, z) < 1.5) return;
-      if (Math.hypot(x - start.x, z - start.z) < 2.5) return;
-      const sd = sampleBilinear(streamDist, hN, hRes, half, x, z);
-      const p = (s === SURFACE.WET_EARTH ? 0.5 : 0.55) + (sd < 15 ? 0.25 : 0) - 0.25 * Math.max(0, noise.fbm(x / 20 + 5, z / 20, 2));
-      if (!r3.chance(p) || occ.any(x, z, 0.15)) return;
-      P.fern.push({ x, z, y: heightAt(x, z), rot: r3.range(0, 6.28), height: r3.range(0.55, 1.2), variant: r3.int(0, 2), rank: r3.float() });
-    });
-  }
-  // --- 논의 모 (시각용)
-  P.rice = [];
-  {
-    const r = rng.fork(12);
-    for (let row = 0; row < paddy.rows; row++) {
-      for (let col = 0; col < paddy.cols; col++) {
-        const u0 = -paddy.halfU + col * paddy.cellW, v0 = -paddy.halfV + row * paddy.cellH;
-        const floor = paddy.floors[row * paddy.cols + col];
-        const fallow = r.chance(0.15); // 일부 논은 비어 있음
-        if (fallow) continue;
-        for (let u = u0 + 0.6; u < u0 + paddy.cellW - 0.6; u += 0.42) {
-          for (let v = v0 + 0.6; v < v0 + paddy.cellH - 0.6; v += 0.34) {
-            if (!r.chance(0.92)) continue;
-            const [x, z] = paddy.toWorld(u + r.range(-0.05, 0.05), v + r.range(-0.05, 0.05));
-            P.rice.push({ x, z, y: floor, rot: r.range(0, 6.28), height: r.range(0.38, 0.62), variant: 0, rank: r.float() });
-          }
-        }
-      }
-    }
-  }
-  // 모든 배치 오브젝트에 태그 연결 (config.objects 참조)
-  const TAG_OF = {
-    bigTree: 'bigTree', palm: 'palm', banana: 'banana', bamboo: 'bamboo', bambooDense: 'bambooDense', sapling: 'sapling',
-    fern: 'fern', grass: 'elephantGrass', shrub: 'shrub', rice: 'rice', log: 'log', rock: 'rock', root: 'root',
+  const ctx = {
+    data, rng, noise, noiseB, half, sN, sRes, hN, hRes, start, streams, trails, paddy, swamp,
+    heightAt, slopeAt, surfAt, waterAt, trailDistAt, vegAt, lowAt, streamDistAt, swampQ,
+    cellIndex: (x, z) => cellIndex(x, z, sN, sRes, half),
+    occ: new SpatialHash(4), jitterGrid,
   };
-  for (const [key, list] of Object.entries(P)) {
-    const tags = T[TAG_OF[key]];
-    if (!tags) continue;
-    for (const it of list) { it.type ??= TAG_OF[key]; it.tags ??= tags; }
-  }
+  placeFlora(ctx);
   data.timings.placement = now() - t0;
   onProgress(0.7, '식생 배치');
-
-  // -------------------------------------------------------------
-  // 6. 캐노피(하늘 가림) 맵 + 은폐(cover) 맵 — 1m
-  // -------------------------------------------------------------
-  const cN = size; // 1m 셀
-  const canopy = new Float32Array(cN * cN);      // 0~1 가림 정도
-  const canopyLow = new Float32Array(cN * cN).fill(1e4);
-  const canopyHigh = new Float32Array(cN * cN).fill(-1e4);
-  const stampCanopy = (cx, cz, rad, alpha, y0, y1, holeScale) => {
-    const i0 = Math.max(0, Math.floor(cx - rad + half)), i1 = Math.min(cN - 1, Math.ceil(cx + rad + half));
-    const j0 = Math.max(0, Math.floor(cz - rad + half)), j1 = Math.min(cN - 1, Math.ceil(cz + rad + half));
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        const x = i - half + 0.5, z = j - half + 0.5;
-        const d = Math.hypot(x - cx, z - cz) / rad;
-        if (d >= 1) continue;
-        const holes = smoothstep(-0.35, 0.25, noise.fbm(x / holeScale + 100, z / holeScale - 100, 3));
-        const a = alpha * Math.sqrt(1 - d * d) * holes;
-        const k = j * cN + i;
-        canopy[k] = 1 - (1 - canopy[k]) * (1 - a);
-        canopyLow[k] = Math.min(canopyLow[k], y0);
-        canopyHigh[k] = Math.max(canopyHigh[k], y1);
-      }
-    }
-  };
-  for (const t of P.bigTree) {
-    const top = t.y + t.height;
-    stampCanopy(t.x, t.z, t.crownR * 1.1, 0.97, top - t.height * 0.32, top + 1, 5.5);
-  }
-  for (const p of P.palm) stampCanopy(p.x, p.z, 3.6, 0.55, p.y + p.height - 2, p.y + p.height + 1, 2.5);
-  for (const b of P.bamboo) stampCanopy(b.x, b.z, 3.5, 0.6, b.y + b.height * 0.45, b.y + b.height, 2.5);
-  for (const b of P.bambooDense) stampCanopy(b.x, b.z, 3.2, 0.7, b.y + b.height * 0.4, b.y + b.height, 2.5);
-  for (const b of P.banana) stampCanopy(b.x, b.z, 1.8, 0.45, b.y + 1.2, b.y + b.height, 2);
-  data.canopy = canopy;
-  data.canopyLow = canopyLow;
-  data.canopyHigh = canopyHigh;
-  data.cN = cN;
-
-  // 은폐 맵: 체적형 식생 (코끼리풀·덤불·고사리)의 높이와 1m당 소광계수
-  const coverHeight = new Float32Array(cN * cN);
-  const coverSigma = new Float32Array(cN * cN);
-  const stampCover = (cx, cz, rad, height, sigma) => {
-    const i0 = Math.max(0, Math.floor(cx - rad + half)), i1 = Math.min(cN - 1, Math.floor(cx + rad + half));
-    const j0 = Math.max(0, Math.floor(cz - rad + half)), j1 = Math.min(cN - 1, Math.floor(cz + rad + half));
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        const k = j * cN + i;
-        coverHeight[k] = Math.max(coverHeight[k], height);
-        coverSigma[k] = Math.max(coverSigma[k], sigma);
-      }
-    }
-  };
-  const sig = (vb) => -Math.log(1 - Math.min(vb, 0.99));
-  for (const g of P.grass) stampCover(g.x, g.z, 0.6, g.height, sig(T.elephantGrass.visionBlock));
-  for (const s of P.shrub) stampCover(s.x, s.z, 0.85, s.height, sig(T.shrub.visionBlock));
-  for (const f of P.fern) stampCover(f.x, f.z, 0.55, f.height * 0.8, sig(T.fern.visionBlock));
-  data.coverHeight = coverHeight;
-  data.coverSigma = coverSigma;
+  buildGrids(ctx);
+  data.timings.grids = now() - t0;
 
   // -------------------------------------------------------------
   // 7. 테스트 지점 (지형에 맞춰 위치·바라보는 방향 계산)
   // -------------------------------------------------------------
   const yawOf = (dx, dz) => Math.atan2(-dx, -dz);           // 바라보는 방향 → yaw (0 = 북)
   const along = (tr, s, ds = 3) => { const [ax, az] = tr.line.pointAt(s); const [bx, bz] = tr.line.pointAt(s + ds); return { x: ax, z: az, yaw: yawOf(bx - ax, bz - az) }; };
+  const P = data.placements;
   data.testPoints = W.testPoints.map((p) => ({ ...p }));
   const setTP = (key, v) => Object.assign(data.testPoints.find((p) => p.key === key), v);
   const t1 = trails[0];
@@ -913,6 +555,28 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
       const x = near.x + (dx / l) * (near.radius + 1.6), z = near.z + (dz / l) * (near.radius + 1.6);
       setTP('8', { x, z, yaw: yawOf(near.x - x, near.z - z) });
     }
+  }
+
+  {
+    // 시작 지점에서 30~90m, 오솔길에서 떨어진 덤불 지대
+    let best = null, bestScore = Infinity;
+    for (let z = start.z - 90; z < start.z + 90; z += 1) {
+      for (let x = start.x - 90; x < start.x + 90; x += 1) {
+        const d = Math.hypot(x - start.x, z - start.z);
+        if (d < 30 || d > 90) continue;
+        const c = cellIndex(x, z, sN, sRes, half);
+        if (VK[c] !== VEG.SHRUB || trailDist[c] < 8 || slopeAt(x, z) > 18) continue;
+        let ok = true;
+        for (let a = 0; a < 6.28 && ok; a += 0.8) {
+          const v = VK[cellIndex(x + Math.cos(a) * 3, z + Math.sin(a) * 3, sN, sRes, half)];
+          if (v !== VEG.SHRUB && v !== VEG.COVER && v !== VEG.THICKET) ok = false;
+        }
+        if (!ok || ctx.occ.any(x, z, 0.8)) continue;
+        const score = Math.abs(d - 45);
+        if (score < bestScore) { bestScore = score; best = [x, z]; }
+      }
+    }
+    if (best) setTP('9', { x: best[0], z: best[1], yaw: yawOf(start.x - best[0], start.z - best[1]) });
   }
 
   data.timings.total = now() - t0;
@@ -1007,6 +671,72 @@ function stampPolylineCells(line, radius, n, res, half, dist, sArr, idArr, id) {
   }
 }
 
+/**
+ * 물방울 수력 침식 (Hans Beyer 방식 단순화). mask(저지대)가 높은 곳은 침식하지 않는다.
+ * 빗방울이 경사를 따라 흐르며 흙을 깎고 느려지면 내려놓아 자연스러운 골·퇴적 지형을 만든다.
+ */
+function erodeTerrain(H, low, n, rng, o) {
+  const R = o.radius;
+  const offs = [], wts = [];
+  let wsum = 0;
+  for (let dy = -R; dy <= R; dy++) {
+    for (let dx = -R; dx <= R; dx++) {
+      const d = Math.hypot(dx, dy);
+      if (d > R) continue;
+      const w = 1 - d / (R + 0.001);
+      offs.push(dy * n + dx); wts.push(w); wsum += w;
+    }
+  }
+  for (let k = 0; k < wts.length; k++) wts[k] /= wsum;
+  const margin = R + 2;
+  const heightGrad = (x, y, out) => {
+    const ix = x | 0, iy = y | 0, fx = x - ix, fy = y - iy;
+    const i = iy * n + ix;
+    const h00 = H[i], h10 = H[i + 1], h01 = H[i + n], h11 = H[i + n + 1];
+    out.gx = (h10 - h00) * (1 - fy) + (h11 - h01) * fy;
+    out.gy = (h01 - h00) * (1 - fx) + (h11 - h10) * fx;
+    out.h = h00 * (1 - fx) * (1 - fy) + h10 * fx * (1 - fy) + h01 * (1 - fx) * fy + h11 * fx * fy;
+    return out;
+  };
+  const g0 = { gx: 0, gy: 0, h: 0 }, g1 = { gx: 0, gy: 0, h: 0 };
+  for (let d = 0; d < o.drops; d++) {
+    let x = margin + rng.float() * (n - 2 * margin - 1);
+    let y = margin + rng.float() * (n - 2 * margin - 1);
+    if (low[(y | 0) * n + (x | 0)] > 0.75) continue;
+    let dx = 0, dy = 0, speed = 1, water = 1, sed = 0;
+    for (let step = 0; step < o.maxSteps; step++) {
+      const ix = x | 0, iy = y | 0, fx = x - ix, fy = y - iy;
+      const i = iy * n + ix;
+      heightGrad(x, y, g0);
+      dx = dx * o.inertia - g0.gx * (1 - o.inertia);
+      dy = dy * o.inertia - g0.gy * (1 - o.inertia);
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-6) break;
+      dx /= len; dy /= len;
+      const nx = x + dx, ny = y + dy;
+      if (nx < margin || ny < margin || nx >= n - margin - 1 || ny >= n - margin - 1) break;
+      const dh = heightGrad(nx, ny, g1).h - g0.h;
+      const mask = 1 - low[i];
+      const cap = Math.max(-dh * speed * water * o.capacity, 0.01);
+      if (sed > cap || dh > 0) {
+        const amt = dh > 0 ? Math.min(dh, sed) : (sed - cap) * o.deposit;
+        sed -= amt;
+        H[i] += amt * (1 - fx) * (1 - fy);
+        H[i + 1] += amt * fx * (1 - fy);
+        H[i + n] += amt * (1 - fx) * fy;
+        H[i + n + 1] += amt * fx * fy;
+      } else {
+        const amt = Math.min((cap - sed) * o.erode, -dh) * mask;
+        for (let k = 0; k < offs.length; k++) H[i + offs[k]] -= amt * wts[k];
+        sed += amt;
+      }
+      speed = Math.sqrt(Math.max(0, speed * speed - dh * o.gravity));
+      water *= 1 - o.evaporate;
+      x = nx; y = ny;
+    }
+  }
+}
+
 function boxBlur(src, n, r) {
   const tmp = new Float32Array(src.length);
   const out = new Float32Array(src.length);
@@ -1035,7 +765,7 @@ function boxBlur(src, n, r) {
   return out;
 }
 
-function jitterGrid(rng, half, spacing, fn) {
+export function jitterGrid(rng, half, spacing, fn) {
   for (let z = -half; z < half; z += spacing) {
     for (let x = -half; x < half; x += spacing) {
       fn(x + rng.float() * spacing, z + rng.float() * spacing);
@@ -1044,7 +774,7 @@ function jitterGrid(rng, half, spacing, fn) {
 }
 
 /** 배치 중 겹침 검사용 간단한 공간 해시 */
-class SpatialHash {
+export class SpatialHash {
   constructor(cell) { this.cell = cell; this.map = new Map(); }
   key(i, j) { return i * 73856093 ^ j * 19349663; }
   add(x, z, r) {

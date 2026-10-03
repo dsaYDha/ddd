@@ -14,6 +14,8 @@ export const CONFIG = {
     surfaceRes: 0.5,        // 지면 종류 격자 간격 (m)
     chunkSize: 32,          // 식생 청크 크기 (m)
     safetyMargin: 3,        // 자연 장애물 뒤에 숨겨둔 최후 안전 경계 (m, 가장자리에서)
+    // 물방울 침식 (언덕 사면에 골을 팜)
+    erosion: { drops: 45000, maxSteps: 40, inertia: 0.08, capacity: 2.6, deposit: 0.22, erode: 0.15, evaporate: 0.025, gravity: 5, radius: 2 },
     start: { x: -10, z: -50, yaw: 2.6 },  // yaw: 라디안, 0 = -Z(북) 방향
     // 1단계 테스트용 순간이동 지점 (F3 디버그 중 숫자키 1~8)
     testPoints: [
@@ -25,6 +27,7 @@ export const CONFIG = {
       { key: '6', name: '코끼리풀 군락', x: 18, z: -30 },
       { key: '7', name: '젖은 급경사 (개울 둑)', x: 0, z: 0 },   // 생성 시 실제 경사지로 재배치됨
       { key: '8', name: '대나무 숲', x: -40, z: -70 },
+      { key: '9', name: '울창한 숲속 (덤불)', x: -20, z: -20 },   // 생성 시 실제 덤불 지대로 재배치됨
     ],
   },
 
@@ -42,6 +45,7 @@ export const CONFIG = {
   //  slipDeg    : 미끄러지기 시작하는 경사 (젖음도에 따라 slope.slipWetReductionDeg 만큼 낮아짐)
   //  wetSpeed   : 젖음도 1일 때 추가 속도 감소 비율, wetStamina: 추가 스태미나 소모 비율
   //  noise      : 기본 발소리 소음 반경 (m, 보통 걸음 기준)
+  //  rustle     : 식물을 헤치고 지나갈 때 걸음마다 내는 '바스락' 소음 반경 (m, 식생 지면만)
   //  sound      : 발소리 종류 (audio/Footsteps.js)
   // ------------------------------------------------------------------
   surfaces: {
@@ -53,7 +57,10 @@ export const CONFIG = {
     paddy:        { label: '논 (물+진흙)',  speed: 0.35, stamina: 2.2, sink: 0.25, sinkStill: 0.38, accel: 1.8, decel: 2.6, stepPulse: 0.65, stride: 0.65, bob: 1.9, slip: 1.0,  wetSlip: 0.1,  slipDeg: 25, wetSpeed: 0.12, wetStamina: 0.12, noise: 22, sound: 'paddy',   noSprint: true,  noJump: true,  noProne: false },
     shallowWater: { label: '얕은 물',       speed: 0.7,  stamina: 1.3, sink: 0,    sinkStill: 0,    accel: 3.5, decel: 4.5, stepPulse: 0.25, stride: 0.85, bob: 1.3, slip: 0.4,  wetSlip: 0.1,  slipDeg: 28, wetSpeed: 0.05, wetStamina: 0.05, noise: 22, sound: 'splash',  noSprint: false, noJump: true,  noProne: false },
     deepWater:    { label: '깊은 물 (허리)', speed: 0.3, stamina: 2.2, sink: 0,    sinkStill: 0,    accel: 1.6, decel: 2.4, stepPulse: 0.4,  stride: 0.7,  bob: 1.6, slip: 0.4,  wetSlip: 0.1,  slipDeg: 28, wetSpeed: 0.05, wetStamina: 0.05, noise: 26, sound: 'wade',    noSprint: true,  noJump: true,  noProne: true  },
-    brush:        { label: '코끼리풀·덤불', speed: 0.6,  stamina: 1.3, sink: 0,    sinkStill: 0,    accel: 4.5, decel: 6,   stepPulse: 0.15, stride: 0.85, bob: 1.2, slip: 0.1,  wetSlip: 0.35, slipDeg: 32, wetSpeed: 0.05, wetStamina: 0.08, noise: 24, sound: 'brush',   noSprint: false, noJump: false, noProne: false },
+    brush:        { label: '키 큰 풀·밀집 덤불', speed: 0.55, stamina: 1.4, sink: 0, sinkStill: 0,  accel: 4.2, decel: 6,   stepPulse: 0.15, stride: 0.8,  bob: 1.2, slip: 0.1,  wetSlip: 0.35, slipDeg: 32, wetSpeed: 0.05, wetStamina: 0.08, noise: 12, rustle: 24, sound: 'brush',       noSprint: false, noJump: false, noProne: false },
+    // ---- 1단계 보완: 식생 지면 (키 순서가 지면 ID — 기존 0~8 유지, 9·10 추가)
+    groundCover:  { label: '낮은 지피식물', speed: 0.9,  stamina: 1.1, sink: 0,    sinkStill: 0,    accel: 7.5, decel: 9.5, stepPulse: 0,    stride: 0.95, bob: 1.05, slip: 0.12, wetSlip: 0.45, slipDeg: 31, wetSpeed: 0.05, wetStamina: 0.05, noise: 10, rustle: 9, sound: 'groundCover', noSprint: false, noJump: false, noProne: false },
+    shrub:        { label: '무릎~허리 덤불', speed: 0.7, stamina: 1.3, sink: 0,    sinkStill: 0,    accel: 5.5, decel: 7,   stepPulse: 0.1,  stride: 0.85, bob: 1.12, slip: 0.1, wetSlip: 0.4,  slipDeg: 32, wetSpeed: 0.05, wetStamina: 0.06, noise: 10, rustle: 16, sound: 'shrub',      noSprint: false, noJump: false, noProne: false },
   },
 
   // ------------------------------------------------------------------
@@ -189,6 +196,7 @@ export const CONFIG = {
     suctionRadius: 16,        // 진흙에서 발 빼는 소리
     stanceChangeRadius: { prone: 6, other: 4 },
     slideRadius: 14,
+    rustleGaitMul: { sprint: 1.6, walk: 1.0, quiet: 0.45, crouch: 0.7, prone: 0.55 },  // 식물 헤치는 소리 배율
     rainReduction: 0.55,      // 폭우(강도 1)일 때 반경 감소 비율
     historySeconds: 6,
   },
@@ -211,16 +219,29 @@ export const CONFIG = {
   objects: {
     terrain:       { blocksMovement: true,  visionBlock: 1.0,  bulletBlock: 'full' },
     bigTree:       { blocksMovement: true,  visionBlock: 1.0,  bulletBlock: 'full' },
+    midTree:       { blocksMovement: true,  visionBlock: 1.0,  bulletBlock: 'full' },     // 중층 나무 (9~18m)
     canopy:        { blocksMovement: false, visionBlock: 0.5,  bulletBlock: 'none' },
+    epiphyte:      { blocksMovement: false, visionBlock: 0.3,  bulletBlock: 'none' },     // 줄기의 이끼·착생 양치
+    liana:         { blocksMovement: false, visionBlock: 0.2,  bulletBlock: 'partial' },  // 늘어진 굵은 덩굴
     palm:          { blocksMovement: true,  visionBlock: 1.0,  bulletBlock: 'full' },
     banana:        { blocksMovement: true,  visionBlock: 0.6,  bulletBlock: 'none' },
+    bananaLeaves:  { blocksMovement: false, visionBlock: 0.55, bulletBlock: 'none' },     // 바나나 잎 (높이 1.5m 이상)
     bamboo:        { blocksMovement: true,  visionBlock: 0.8,  bulletBlock: 'partial' },
     bambooDense:   { blocksMovement: true,  visionBlock: 1.0,  bulletBlock: 'partial' },
+    treeFern:      { blocksMovement: true,  visionBlock: 0.25, bulletBlock: 'partial' },  // 섬유질 줄기
+    treeFernCrown: { blocksMovement: false, visionBlock: 0.55, bulletBlock: 'none' },
+    sapling:       { blocksMovement: true,  visionBlock: 0.15, bulletBlock: 'none' },     // 가는 줄기
+    saplingCrown:  { blocksMovement: false, visionBlock: 0.45, bulletBlock: 'none' },     // 어린 나무 잎 (높이 1.2m 이상)
+    vineWall:      { blocksMovement: true,  visionBlock: 0.95, bulletBlock: 'partial' },  // 얽힌 덩굴 벽 (통과 불가)
+    // 체적형 (visionBlock = 1m 통과 시 차단 비율)
+    groundCover:   { blocksMovement: false, visionBlock: 0.7,  bulletBlock: 'none' },     // 고사리·넓은잎 풀·이끼·덩굴 (0~0.5m)
+    shrub:         { blocksMovement: false, visionBlock: 0.5,  bulletBlock: 'none' },     // 덤불 (0.5~3m)
+    taro:          { blocksMovement: false, visionBlock: 0.55, bulletBlock: 'none' },     // 토란잎 식물
+    rattan:        { blocksMovement: false, visionBlock: 0.6,  bulletBlock: 'none' },     // 등나무류 (가시 덤불)
     fern:          { blocksMovement: false, visionBlock: 0.35, bulletBlock: 'none' },
     elephantGrass: { blocksMovement: false, visionBlock: 0.75, bulletBlock: 'none' },
-    shrub:         { blocksMovement: false, visionBlock: 0.6,  bulletBlock: 'none' },
-    sapling:       { blocksMovement: true,  visionBlock: 0.15, bulletBlock: 'none' },     // 가는 줄기
-    saplingCrown:  { blocksMovement: false, visionBlock: 0.45, bulletBlock: 'none' },     // 어린 나무 잎 (높이 1.3m 이상)
+    reed:          { blocksMovement: false, visionBlock: 0.6,  bulletBlock: 'none' },     // 갈대·부들
+    waterPlant:    { blocksMovement: false, visionBlock: 0.05, bulletBlock: 'none' },     // 물 위 수생식물
     rice:          { blocksMovement: false, visionBlock: 0.05, bulletBlock: 'none' },
     log:           { blocksMovement: true,  visionBlock: 1.0,  bulletBlock: 'full' },
     rock:          { blocksMovement: true,  visionBlock: 1.0,  bulletBlock: 'full' },
@@ -228,6 +249,7 @@ export const CONFIG = {
     dike:          { blocksMovement: false, visionBlock: 1.0,  bulletBlock: 'full' },
     water:         { blocksMovement: false, visionBlock: 0.9,  bulletBlock: 'partial' },
   },
+
 
   // ------------------------------------------------------------------
   // 날씨·시간대
@@ -249,7 +271,7 @@ export const CONFIG = {
         label: '새벽 안개', sunElevation: 9, sunAzimuth: 75,
         sunColor: [1.0, 0.78, 0.55], sunIntensity: 2.2,
         skyColor: [0.62, 0.68, 0.72], groundColor: [0.2, 0.19, 0.14], hemiIntensity: 1.3,
-        fogColor: [0.6, 0.64, 0.64], fogDensity: 0.02, mist: 0.015,
+        fogColor: [0.6, 0.64, 0.64], fogDensity: 0.015, mist: 0.012,
         skyTop: [0.42, 0.52, 0.62], skyHorizon: [0.78, 0.74, 0.68], exposure: 1.2,
         ambienceDawn: 1, ambienceDay: 0.3, ambienceDusk: 0,
       },
@@ -257,7 +279,7 @@ export const CONFIG = {
         label: '한낮', sunElevation: 68, sunAzimuth: 160,
         sunColor: [1.0, 0.96, 0.88], sunIntensity: 4.2,
         skyColor: [0.66, 0.74, 0.8], groundColor: [0.22, 0.21, 0.15], hemiIntensity: 1.6,
-        fogColor: [0.66, 0.71, 0.7], fogDensity: 0.0095, mist: 0.004,
+        fogColor: [0.66, 0.71, 0.7], fogDensity: 0.0085, mist: 0.004,
         skyTop: [0.36, 0.52, 0.72], skyHorizon: [0.76, 0.8, 0.8], exposure: 1.0,
         ambienceDawn: 0.2, ambienceDay: 1, ambienceDusk: 0,
       },
@@ -265,7 +287,7 @@ export const CONFIG = {
         label: '해질녘', sunElevation: 7, sunAzimuth: 255,
         sunColor: [1.0, 0.56, 0.3], sunIntensity: 2.4,
         skyColor: [0.56, 0.48, 0.48], groundColor: [0.17, 0.14, 0.11], hemiIntensity: 1.05,
-        fogColor: [0.5, 0.42, 0.38], fogDensity: 0.016, mist: 0.012,
+        fogColor: [0.5, 0.42, 0.38], fogDensity: 0.013, mist: 0.01,
         skyTop: [0.3, 0.32, 0.45], skyHorizon: [0.86, 0.56, 0.38], exposure: 1.2,
         ambienceDawn: 0, ambienceDay: 0.35, ambienceDusk: 1,
       },
@@ -276,22 +298,106 @@ export const CONFIG = {
   // 그래픽 품질 (Esc 메뉴에서 변경)
   // ------------------------------------------------------------------
   graphics: {
+    // vegDensity: 중층 식생 밀도, grassDensity: 하층(덤불·풀) 밀도
+    // groundCoverRadius: 지피식물 고밀도 반경(m), groundCoverDensity: 지피식물 밀도 배율
+    // treeNear/treeMid: 큰 나무 LOD 거리, shrubDistance: 덤불 그리는 거리, terrainNear: 지형 1m 격자 거리(밖은 2m), shafts: 빛기둥 수
     low: {
-      label: '낮음', vegDensity: 0.45, grassDensity: 0.4, shadows: false, shadowMapSize: 1024, shadowRadius: 0,
-      pixelRatio: 0.75, viewDistance: 120, nearLodDistance: 20, grassDistance: 30, fernDistance: 24, smallDistance: 50,
-      lightShafts: false, rainDrops: 2500,
+      label: '낮음', vegDensity: 0.75, grassDensity: 0.7, groundCoverRadius: 18, groundCoverDensity: 0.55,
+      shadows: false, shadowMapSize: 1024, shadowRadius: 0, pixelRatio: 0.75,
+      viewDistance: 105, treeNear: 16, treeMid: 48, nearLodDistance: 16, smallDistance: 40, shrubDistance: 34,
+      grassDistance: 27, terrainNear: 40, shafts: 0, lightShafts: false, rainDrops: 2500,
     },
     medium: {
-      label: '중간', vegDensity: 0.7, grassDensity: 0.7, shadows: true, shadowMapSize: 1024, shadowRadius: 24,
-      pixelRatio: 1.0, viewDistance: 170, nearLodDistance: 30, grassDistance: 45, fernDistance: 34, smallDistance: 75,
-      lightShafts: true, rainDrops: 5000,
+      label: '중간', vegDensity: 0.95, grassDensity: 0.92, groundCoverRadius: 32, groundCoverDensity: 0.8,
+      shadows: true, shadowMapSize: 1024, shadowRadius: 24, pixelRatio: 1.0,
+      viewDistance: 165, treeNear: 26, treeMid: 80, nearLodDistance: 26, smallDistance: 70, shrubDistance: 58,
+      grassDistance: 45, terrainNear: 60, shafts: 28, lightShafts: true, rainDrops: 5000,
     },
     high: {
-      label: '높음', vegDensity: 1.0, grassDensity: 1.0, shadows: true, shadowMapSize: 2048, shadowRadius: 40,
-      pixelRatio: 1.5, viewDistance: 230, nearLodDistance: 42, grassDistance: 62, fernDistance: 46, smallDistance: 100,
-      lightShafts: true, rainDrops: 9000,
+      label: '높음', vegDensity: 1.0, grassDensity: 1.0, groundCoverRadius: 42, groundCoverDensity: 1.0,
+      shadows: true, shadowMapSize: 2048, shadowRadius: 40, pixelRatio: 1.5,
+      viewDistance: 220, treeNear: 36, treeMid: 105, nearLodDistance: 36, smallDistance: 95, shrubDistance: 78,
+      grassDistance: 62, terrainNear: 90, shafts: 56, lightShafts: true, rainDrops: 9000,
     },
   },
+  performance: {
+    autoQuality: true,           // 첫 실행 때 프레임이 계속 낮으면 품질을 한 단계 낮추고 알림
+    autoQualityMinFps: 33,
+  },
+
+  // ------------------------------------------------------------------
+  // 식생 (1단계 보완 — 울창한 정글)
+  // ------------------------------------------------------------------
+  vegetation: {
+    // 숲 바닥 분류 비율에 영향 (0~1): 덤불 지면이 되는 하층 밀도 기준값, 밀집 덤불 기준값
+    shrubThreshold: 0.5,
+    thicketThreshold: 0.47,
+    litterPatchThreshold: 0.36,  // 클수록 그늘진 낙엽 바닥 조각이 줄어듦
+    // 정적 배치 밀도 (1m² 당 시도 수 × 확률)
+    saplingSpacing: 3.7,
+    midTreeSpacing: 8,           // 중층 나무 (9~18m) 배치 간격
+    treeFernSpacing: 5.5,
+    shrubSpacing: 1.45,
+    vineWalls: 34,               // 얽힌 덩굴 벽 개수
+    lianaChance: 0.4,            // 이웃한 큰 나무 사이 굵은 덩굴 확률
+    // 은폐(시야 레이·노출도) 높이 구간 (지면 위 m) — 구간마다 1m 통과 시 소광계수(σ)를 저장
+    coverBands: [0, 0.5, 1.2, 2.0, 3.2],
+    // 숲 바닥 종류별 기본 σ (구간 순서대로). 개별 덤불·풀·갈대는 이 위에 더해진다.
+    coverProfiles: {
+      litter:  [0.25, 0, 0, 0],
+      cover:   [1.2, 0.08, 0, 0],
+      bank:    [1.0, 0.3, 0.02, 0],
+      shrub:   [1.3, 0.35, 0.03, 0],
+      thicket: [1.5, 0.8, 0.25, 0.1],
+      grass:   [1.4, 0.8, 0.3, 0.05],
+      reed:    [0.9, 0.6, 0.3, 0.05],
+    },
+    // 동적 지피층 (플레이어 주변만 고밀도로 렌더링, 시드 기반이라 같은 자리엔 항상 같은 풀)
+    groundCover: {
+      cellSize: 4,
+      fadeStart: 0.62,           // 반경의 이 비율부터 밀도·크기가 줄어듦
+      farDensity: 0.25,          // 반경 끝에서 남는 밀도
+      // 종류별 1m² 당 개수 (밀도 배율 1 기준)
+      species: {
+        creeper: 0.85,           // 바닥을 기는 덩굴 (납작)
+        moss: 0.35,              // 이끼 덩어리 (낙엽 바닥·밑동)
+        herb: 0.75,              // 넓은잎 풀
+        fern: 0.45,              // 작은 고사리
+        grassTuft: 0.5,          // 풀 포기
+        seedling: 0.22,          // 어린 묘목
+        bankGrass: 1.4,          // 개울가 물풀
+      },
+    },
+  },
+
+  // 바람·식물 밀림
+  wind: {
+    direction: [0.8, 0.45],      // 바람 방향 (x, z)
+    gustSpeed: 0.31,
+    flutter: 0.035,              // 잎 떨림 (m)
+  },
+  interaction: {
+    pushRadius: 1.0,             // 플레이어가 지나가면 식물이 밀려나는 반경 (m)
+    pushStrength: 0.55,          // 최대 밀림 (m)
+  },
+
+  // 빛·분위기
+  lighting: {
+    sunfleckTile: 9,             // 햇빛 얼룩 무늬 한 장의 크기 (m) — 작을수록 얼룩이 잘아짐
+    sunfleckStrength: 0.95,      // 캐노피가 햇빛을 가리는 세기 (1 = 얼룩 사이는 완전히 그늘)
+    canopyTint: [0.8, 1.0, 0.68],// 잎을 통과한 환경광 (녹색)
+    floorAO: 0.62,               // 줄기 밑동·덤불 아래 어두워짐 세기
+    translucency: 0.55,          // 역광에서 잎이 비치는 세기
+    grading: { saturation: 0.9, contrast: 1.07 },
+    vignette: 0.22,
+  },
+  fog: {
+    mistBase: 7.0,               // 저지대 안개가 짙어지는 기준 높이 (m)
+    mistFalloff: 4.5,            // 위로 갈수록 옅어지는 정도 (m)
+    underCanopyDim: 0.75,        // 숲속에서 안개가 어둡고 녹회색이 되는 정도 (0~1)
+    sunScatter: 0.55,            // 해 쪽을 볼 때 안개가 밝아지는 정도
+  },
+
 
   // ------------------------------------------------------------------
   // 사운드

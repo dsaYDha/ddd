@@ -126,7 +126,9 @@ export class Atmosphere {
       s.camera.updateProjectionMatrix();
     }
     this.rain.geometry.setDrawRange(0, settings.rainDrops * 2);
-    this.shafts.visible = settings.lightShafts;
+    this.shaftsEnabled = settings.lightShafts && settings.shafts > 0;
+    this.shafts.visible = false;
+    this._shaftFocus.set(1e9, 0, 0);
     this.scene.fog.far = this.state.mist;
   }
 
@@ -177,6 +179,15 @@ export class Atmosphere {
     shared.uRain.value = this.rainIntensity;
     shared.uTime.value += dt;
     this._applyState();
+    // 숲속 안개: 카메라 위 캐노피가 짙을수록 녹회색·어둡게
+    const camCover = this.query.getCanopyCover(camera.position.x, camera.position.z);
+    this._camCover = this._camCover === undefined ? camCover : this._camCover + (camCover - this._camCover) * Math.min(1, dt * 1.5);
+    const F = CONFIG.fog;
+    shared.uFogCanopy.value.set(0.56, 0.68, 0.54, Math.min(1, (0.25 + this._camCover) * F.underCanopyDim));
+    // 햇빛 얼룩이 바람에 살짝 일렁임
+    const t = shared.uTime.value, w = this.state.wind;
+    shared.uFleckInfo.value.z = Math.sin(t * 0.83) * 0.004 * w + Math.sin(t * 2.1) * 0.0015 * w;
+    shared.uFleckInfo.value.w = Math.cos(t * 0.71) * 0.004 * w;
 
     // 하늘 돔·그림자 카메라는 플레이어를 따라감
     this.sky.position.copy(camera.position);
@@ -194,7 +205,7 @@ export class Atmosphere {
     this.rain.visible = this.rainIntensity > 0.01;
 
     // 빛줄기
-    if (this.shafts.visible) this._updateShafts(focus);
+    if (this.shaftsEnabled) this._updateShafts(focus);
 
     // 환경맵 (물 반사) — 전환이 끝나면 다시 굽기
     if (this._envDirty) {
@@ -233,6 +244,24 @@ export class Atmosphere {
     shared.uCanopyInfo.value.z = ox;
     shared.uCanopyInfo.value.w = oz;
     shared.uSunLow.value = 1 - this.sunDir.y;
+    shared.uSunDir.value.copy(this.sunDir);
+    shared.uSunColor.value.setRGB(...s.sunColor).multiplyScalar(s.sunIntensity / 4.2);
+    const L = CONFIG.lighting;
+    shared.uTranslucency.value = L.translucency;
+    shared.uCanopyTint.value.setRGB(...L.canopyTint);
+    shared.uFleckInfo.value.x = 1 / L.sunfleckTile;
+    shared.uFleckInfo.value.y = L.sunfleckStrength * (1 - s.overcast * 0.85);
+    // 해가 낮을수록 얼룩이 해 방위 쪽으로 길쭉해짐: 해 방위 축 좌표를 sin(고도) 만큼 줄임
+    {
+      const az = Math.atan2(this.sunDir.z, this.sunDir.x);
+      const k = Math.max(0.3, this.sunDir.y);
+      const c = Math.cos(az), sn = Math.sin(az);
+      shared.uFleckMat.value.set(c * k, sn * k, -sn, c);
+    }
+    shared.uWindDir.value.set(...CONFIG.wind.direction).normalize();
+    shared.uPushStrength.value = CONFIG.interaction.pushStrength;
+    shared.uFogSun.value.set(this.sunDir.x, this.sunDir.y, this.sunDir.z, CONFIG.fog.sunScatter * (1 - s.overcast * 0.8) * Math.min(1, s.sunIntensity / 2));
+    shared.uFogSunColor.value.setRGB(...s.sunColor).multiplyScalar(0.45);
     if (this.shaftMat) {
       this.shaftMat.uniforms.uColor.value.setRGB(...s.sunColor);
       this.shaftMat.uniforms.uIntensity.value = s.shafts;
@@ -312,7 +341,7 @@ export class Atmosphere {
   }
 
   // -------------------------------------------------------------
-  // 캐노피 틈으로 새는 빛줄기
+  // 캐노피 틈으로 새는 빛줄기 — 햇빛 방향 축으로 늘인 카드가 카메라 쪽을 향함 (가산 혼합)
   // -------------------------------------------------------------
   _buildShafts() {
     const d = this.data;
@@ -322,47 +351,61 @@ export class Atmosphere {
       return d.canopy[j * cN + i];
     };
     const gaps = [];
-    for (let z = -half + 10; z < half - 10; z += 3) {
-      for (let x = -half + 10; x < half - 10; x += 3) {
-        if (cover(x, z) > 0.3) continue;
+    for (let z = -half + 10; z < half - 10; z += 2.5) {
+      for (let x = -half + 10; x < half - 10; x += 2.5) {
+        if (cover(x, z) > 0.42) continue;
         let ring = 0, n = 0;
-        for (let a = 0; a < 6.28; a += 0.8) { ring += cover(x + Math.cos(a) * 6, z + Math.sin(a) * 6); n++; }
-        if (ring / n < 0.62) continue;
-        gaps.push({ x, z, y: this.query.getTerrainHeight(x, z) + 22, r: 0.45 + (1 - cover(x, z)) * 0.8 });
+        for (let a = 0; a < 6.28; a += 0.8) { ring += cover(x + Math.cos(a) * 5, z + Math.sin(a) * 5); n++; }
+        if (ring / n < 0.6) continue;
+        const top = d.canopyHigh[Math.max(0, Math.min(cN - 1, Math.floor(z + half))) * cN + Math.max(0, Math.min(cN - 1, Math.floor(x + half)))];
+        const gy = this.query.getTerrainHeight(x, z);
+        gaps.push({ x, z, y: Math.max(gy + 14, Math.min(gy + 34, top > -100 ? top - 4 : gy + 22)), w: 0.6 + (1 - cover(x, z)) * 1.6, seed: (x * 13.1 + z * 7.7) % 1 });
       }
     }
     this.gaps = gaps;
-    const geo = new THREE.CylinderGeometry(1, 1.25, 1, 10, 1, true);
-    geo.translate(0, -0.5, 0);
+    const geo = new THREE.PlaneGeometry(1, 1, 1, 6);
+    geo.translate(0, -0.5, 0);   // y: 0(꼭대기) → -1(바닥 쪽)
     this.shaftMat = new THREE.ShaderMaterial({
-      uniforms: { uColor: { value: new THREE.Color(1, 0.9, 0.7) }, uIntensity: { value: 0.4 } },
+      uniforms: {
+        uColor: { value: new THREE.Color(1, 0.9, 0.7) }, uIntensity: { value: 0.4 }, uSunDir: shared.uSunDir, uTime: shared.uTime,
+      },
       vertexShader: /* glsl */`
-        varying float vT;
-        varying float vEdge;
+        uniform vec3 uSunDir;
+        varying vec2 vUv;
         varying float vDist;
+        varying float vFade;
         void main() {
-          vT = -position.y;
-          vec4 wp = modelMatrix * instanceMatrix * vec4( position, 1.0 );
-          vec3 n = normalize( mat3( modelMatrix * instanceMatrix ) * normal );
-          vec3 viewDir = normalize( cameraPosition - wp.xyz );
-          vEdge = abs( dot( n, viewDir ) );
-          vDist = length( cameraPosition - wp.xyz );
-          gl_Position = projectionMatrix * viewMatrix * wp;
+          vec3 top = ( modelMatrix * instanceMatrix[ 3 ] ).xyz;
+          float width = length( instanceMatrix[ 0 ].xyz );
+          float len = length( instanceMatrix[ 1 ].xyz );
+          vec3 axis = -normalize( uSunDir );
+          vec3 toCam = normalize( cameraPosition - top );
+          vec3 side = normalize( cross( axis, toCam ) );
+          vec3 wp = top + side * position.x * width - axis * position.y * len;
+          vUv = vec2( position.x + 0.5, -position.y );
+          vDist = length( cameraPosition - wp );
+          // 축을 정면으로 볼수록(빛줄기 안을 들여다볼수록) 옅게
+          float al = abs( dot( axis, normalize( cameraPosition - wp ) ) );
+          vFade = ( 1.0 - al ) * ( 1.0 - al );
+          gl_Position = projectionMatrix * viewMatrix * vec4( wp, 1.0 );
         }`,
       fragmentShader: /* glsl */`
         uniform vec3 uColor;
         uniform float uIntensity;
-        varying float vT;
-        varying float vEdge;
+        uniform float uTime;
+        varying vec2 vUv;
         varying float vDist;
+        varying float vFade;
         void main() {
-          float a = pow( vEdge, 3.0 ) * smoothstep( 0.0, 0.3, vT ) * ( 1.0 - smoothstep( 0.45, 1.0, vT ) );
-          a *= smoothstep( 6.0, 22.0, vDist ) * ( 1.0 - smoothstep( 40.0, 70.0, vDist ) );
-          gl_FragColor = vec4( uColor * a * uIntensity * 0.045, 1.0 );
+          float across = 1.0 - abs( vUv.x * 2.0 - 1.0 );
+          float a = across * across * smoothstep( 0.0, 0.18, vUv.y ) * ( 1.0 - smoothstep( 0.55, 1.0, vUv.y ) );
+          a *= 0.75 + 0.25 * sin( vUv.y * 9.0 + uTime * 0.6 + vUv.x * 3.0 );
+          a *= smoothstep( 7.0, 22.0, vDist ) * ( 1.0 - smoothstep( 45.0, 75.0, vDist ) ) * vFade;
+          gl_FragColor = vec4( uColor * a * uIntensity * 0.11, 1.0 );
         }`,
-      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, side: THREE.DoubleSide,
     });
-    this.shafts = new THREE.InstancedMesh(geo, this.shaftMat, 80);
+    this.shafts = new THREE.InstancedMesh(geo, this.shaftMat, 64);
     this.shafts.count = 0;
     this.shafts.frustumCulled = false;
     this.shafts.renderOrder = 6;
@@ -375,17 +418,22 @@ export class Atmosphere {
     if (this._shaftFocus.distanceTo(focus) < 5 && this.sunDir.distanceTo(this._shaftSun) < 0.01) return;
     this._shaftFocus.copy(focus);
     this._shaftSun.copy(this.sunDir);
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), this.sunDir);
+    const max = Math.min(64, this.settings ? this.settings.shafts : 28);
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion();
     const sy = Math.max(0.15, this.sunDir.y);
+    const near = this.gaps
+      .map((g) => ({ g, d: Math.hypot(g.x - focus.x, g.z - focus.z) }))
+      .filter((e) => e.d < 70)
+      .sort((a, b) => a.d - b.d);
     let n = 0;
-    for (const g of this.gaps) {
-      if (n >= 80) break;
-      if (Math.hypot(g.x - focus.x, g.z - focus.z) > 70) continue;
-      const len = Math.min(70, 24 / sy);
-      m.compose(new THREE.Vector3(g.x, g.y, g.z), q, new THREE.Vector3(g.r, len, g.r));
+    for (const { g } of near) {
+      if (n >= max) break;
+      const len = Math.min(60, (g.y - focus.y + 6) / sy);
+      m.compose(new THREE.Vector3(g.x, g.y, g.z), q, new THREE.Vector3(g.w, len, 1));
       this.shafts.setMatrixAt(n++, m);
     }
     this.shafts.count = n;
+    this.shafts.visible = n > 0;
     this.shafts.instanceMatrix.needsUpdate = true;
   }
 }

@@ -21,7 +21,9 @@ const COLORS = [
   [96, 120, 80],   // paddy
   [70, 130, 150],  // shallowWater
   [30, 70, 120],   // deepWater
-  [150, 170, 70],  // brush
+  [150, 170, 70],  // brush (키 큰 풀·밀집 덤불)
+  [74, 104, 46],   // groundCover (낮은 지피식물)
+  [58, 88, 36],    // shrub (무릎~허리 덤불)
 ];
 const { size, half, sN, sRes, hN, hRes } = data;
 const W = size * scale;
@@ -53,6 +55,8 @@ const dot = (x, z, rad, col) => {
   }
 };
 for (const t of data.placements.bigTree) dot(t.x, t.z, 1.2, [20, 60, 20]);
+for (const t of data.placements.midTree || []) dot(t.x, t.z, 0.8, [30, 80, 30]);
+for (const c of data.circles) if (c.type === 'vineWall') dot(c.x, c.z, 0.6, [90, 40, 120]);
 for (const t of data.placements.palm) dot(t.x, t.z, 0.6, [60, 140, 40]);
 for (const t of data.placements.banana) dot(t.x, t.z, 0.4, [140, 200, 60]);
 for (const t of data.placements.bamboo) dot(t.x, t.z, t.radius, [180, 200, 90]);

@@ -1,4 +1,4 @@
-// 지면별 발소리 합성: 흙, 낙엽, 질척이는 진흙, 첨벙이는 물, 풀 헤치는 소리
+// 지면별 발소리 합성: 흙, 낙엽, 질척이는 진흙, 첨벙이는 물, 풀 헤치는 소리, 지피식물·덤불 바스락
 // 4단계 적 발소리는 같은 함수에 pan / distance 를 넘겨 재사용한다.
 
 export class Footsteps {
@@ -94,11 +94,40 @@ export class Footsteps {
     this._splashCore(t + 0.15, g * 0.35, p, pan, 0.6);
   }
   _brush(t, g, p, pan) {
-    // 풀 헤치는 소리: 길고 높은 '쉬익' + 줄기 부딪힘
-    this.e.burst({ t, dur: 0.38, attack: 0.06, gain: 0.42 * g, filter: 'bandpass', freq: 2400 * p, freqEnd: 5200 * p, q: 0.9, out: this.out, pan });
-    this.e.burst({ t: t + 0.1, dur: 0.3, attack: 0.05, gain: 0.25 * g, filter: 'bandpass', freq: 4200 * p, freqEnd: 2600 * p, q: 1.2, out: this.out, pan: -pan });
-    this._crackles(t, g * 0.7, 8, 0.35, 1500, 5000, pan);
+    // 키 큰 풀·밀집 덤불: 줄기 부딪힘 + 짧은 쉬익 (긴 '헤치는' 소리는 rustle 이벤트가 냄)
+    this.e.burst({ t, dur: 0.22, attack: 0.04, gain: 0.22 * g, filter: 'bandpass', freq: 2400 * p, freqEnd: 4200 * p, q: 0.9, out: this.out, pan });
+    this._crackles(t, g * 0.7, 8, 0.3, 1500, 5000, pan);
     this._thump(t, g * 0.4, 90 * p, 0.08, pan);
+  }
+  _groundCover(t, g, p, pan) {
+    // 낮은 지피식물: 부드러운 발 디딤 + 잎이 눌리는 작은 소리
+    this._thump(t, g * 0.55, 95 * p, 0.08, pan);
+    this.e.burst({ t, dur: 0.12, attack: 0.012, gain: 0.18 * g, filter: 'bandpass', freq: 2600 * p, q: 0.8, out: this.out, pan });
+    this._crackles(t, g * 0.55, 5, 0.12, 1800, 5200, pan);
+  }
+  _shrub(t, g, p, pan) {
+    // 무릎~허리 덤불: 가지 부딪힘
+    this._thump(t, g * 0.5, 92 * p, 0.08, pan);
+    this.e.burst({ t, dur: 0.16, attack: 0.02, gain: 0.2 * g, filter: 'bandpass', freq: 2200 * p, q: 0.9, out: this.out, pan });
+    this._crackles(t, g * 0.75, 7, 0.22, 1400, 4800, pan);
+  }
+
+  /**
+   * 식물을 헤치고 지나가는 '바스락·쉬익' (HumanMotor 'rustle' 이벤트, 반경이 클수록 큼)
+   * @param {{surfaceKey:string, radius:number, gait:string}} evt
+   */
+  rustle(evt, spatial = {}) {
+    if (!this.e.ready) return;
+    const t = this.e.now + 0.02 + Math.random() * 0.04;
+    const dist = spatial.distance ?? 0;
+    const pan = spatial.pan ?? (Math.random() - 0.5) * 0.5;
+    const g = Math.min(1.4, evt.radius / 20) / (1 + dist * 0.12);
+    const tall = evt.surfaceKey === 'brush' ? 1 : evt.surfaceKey === 'shrub' ? 0.7 : 0.4;
+    const p = 0.9 + Math.random() * 0.2;
+    const dur = 0.25 + 0.3 * tall;
+    this.e.burst({ t, dur, attack: dur * 0.3, gain: 0.38 * g, filter: 'bandpass', freq: 2100 * p, freqEnd: (3200 + 2200 * tall) * p, q: 0.8, out: this.out, pan });
+    this.e.burst({ t: t + dur * 0.25, dur: dur * 0.8, attack: dur * 0.2, gain: 0.22 * g * tall, filter: 'bandpass', freq: 4400 * p, freqEnd: 2500 * p, q: 1.1, out: this.out, pan: -pan });
+    this._crackles(t, g * (0.4 + 0.5 * tall), 4 + Math.round(6 * tall), dur, 1200, 5200, pan);
   }
 
   // --- 기타 몸 동작 ----------------------------------------------

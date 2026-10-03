@@ -5,7 +5,7 @@ import { EventEmitter } from '../core/EventEmitter.js';
 const CONTROLS = [
   ['WASD', '이동'], ['마우스', '시점'], ['Shift', '달리기'], ['X', '조용히 걷기 (토글)'],
   ['C', '앉기'], ['Z', '엎드리기'], ['Q / E', '기울이기'], ['Space', '점프 (앉은 상태에선 일어서기)'],
-  ['Esc', '일시정지·설정'], ['F3', '디버그 정보'], ['F6', '거동 불능 시뮬레이션'],
+  ['Esc', '일시정지·설정'], ['F3', '디버그 정보 (켜진 동안 1~9: 테스트 지점)'], ['F6', '거동 불능 시뮬레이션'],
 ];
 
 export class Menu extends EventEmitter {
@@ -22,6 +22,7 @@ export class Menu extends EventEmitter {
           <div id="loading"><div class="bar"><div class="fill"></div></div><div class="msg">맵 생성 중…</div></div>
           <div id="menu-body" style="display:none">
             <p class="brief">지형 자체가 적이다. 진흙은 발을 붙잡고, 논은 걸음을 늦추고, 젖은 비탈은 몸을 끌어내린다.
+              오솔길은 빠르지만 드러나고, 숲은 느리고 바스락거리지만 몸을 숨겨 준다.
               체력 바는 없다 — 숨소리와 흐려지는 시야로 몸 상태를 느껴라.</p>
             <p class="touch-note">키보드와 마우스가 필요합니다. 데스크톱 브라우저에서 열어 주세요.</p>
             <button id="btn-play" class="primary">클릭하여 시작</button>

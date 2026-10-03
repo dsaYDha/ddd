@@ -7,6 +7,8 @@ import { WorldQuery } from '../src/world/WorldQuery.js';
 import { HumanMotor } from '../src/human/HumanMotor.js';
 import { NoiseEvents } from '../src/core/NoiseEvents.js';
 import { SURFACE, surfaceLabel } from '../src/world/Surfaces.js';
+import { computeExposure } from '../src/human/Exposure.js';
+import { VEG } from '../src/world/WorldGen.js';
 
 const data = generateWorld(CONFIG.world.seed);
 const world = new WorldQuery(data);
@@ -27,13 +29,13 @@ function run(motor, seconds, fn) {
   }
 }
 
-/** 지정 지면이 반경 r 안에서 균일하고 평탄한 지점 찾기 */
-function findSpot(surface, r = 3, maxSlope = 5, near = CONFIG.world.start, maxDist = 150) {
-  let best = null, bestD = Infinity;
+/** 지정 지면이 반경 r 안에서 균일하고 평탄한 지점 찾기 (가까운 순 후보 목록) */
+function findSpots(surface, r = 3, maxSlope = 5, near = CONFIG.world.start, maxDist = 150) {
+  const out = [];
   for (let z = -180; z < 180; z += 1) {
     for (let x = -180; x < 165; x += 1) {
       const d = Math.hypot(x - near.x, z - near.z);
-      if (d > maxDist || d > bestD) continue;
+      if (d > maxDist) continue;
       if (world.getSurfaceAt(x, z) !== surface) continue;
       if (world.getSlope(x, z).deg > maxSlope) continue;
       let ok = true;
@@ -43,10 +45,13 @@ function findSpot(surface, r = 3, maxSlope = 5, near = CONFIG.world.start, maxDi
           if (world.getSurfaceAt(px, pz) !== surface || world.getSupportHeight(px, pz) > world.getTerrainHeight(px, pz) + 0.01) { ok = false; break; }
         }
       }
-      if (ok) { best = { x, z }; bestD = d; }
+      if (ok) out.push({ x, z, d });
     }
   }
-  return best;
+  return out.sort((a, b) => a.d - b.d);
+}
+function findSpot(surface, r = 3, maxSlope = 5, near = CONFIG.world.start, maxDist = 150) {
+  return findSpots(surface, r, maxSlope, near, maxDist)[0] || null;
 }
 
 function newMotor(x, z, yaw = 0) {
@@ -69,6 +74,8 @@ function findAxis(x, z, surface, len) {
     for (let d = -len; d <= len && ok; d += 0.25) {
       const px = x + Math.sin(a) * d, pz = z + Math.cos(a) * d;
       if (world.getSurfaceAt(px, pz) !== surface || world.getSupportHeight(px, pz) > world.getTerrainHeight(px, pz) + 0.01) ok = false;
+      // 줄기(어린 나무·바나나 등)에 걸리지 않는 직선
+      else if (world.clearanceAt(px, pz, world.getTerrainHeight(px, pz) + 1) < CONFIG.movement.radius + 0.1) ok = false;
     }
     if (ok) return a;
   }
@@ -76,9 +83,11 @@ function findAxis(x, z, surface, len) {
 }
 for (let id = 0; id < SURFACE_KEYS.length; id++) {
   let spot = null, axis = null;
-  for (const r of [2, 1.2, 0.6]) {
-    spot = findSpot(id, r, 6);
-    if (spot) { axis = findAxis(spot.x, spot.z, id, 2.2); if (axis !== null) break; }
+  search: for (const [r, sl] of [[2, 6], [1.2, 6], [0.6, 6], [0.6, 12]]) {
+    for (const c of findSpots(id, r, sl).slice(0, 40)) {
+      axis = findAxis(c.x, c.z, id, 2.2);
+      if (axis !== null) { spot = c; break search; }
+    }
   }
   if (!spot || axis === null) { console.log(`  ${surfaceLabel(id)}: 지점 없음`); check(false, `${surfaceLabel(id)} 지점이 시작점 150m 안에 존재`); continue; }
   const m = newMotor(spot.x, spot.z, axis);
@@ -203,18 +212,23 @@ console.log('\n[4] 젖은 급경사 미끄러짐 (맑음 vs 폭우)');
 // -------------------------------------------------------------------
 console.log('\n[5] 스태미나 고갈');
 {
-  const spot = findSpot(SURFACE.LEAF_LITTER, 30, 4);
-  const m = newMotor(spot.x, spot.z);
+  // 숲이 빽빽해져 원을 그리며 달릴 공터가 없으므로 북쪽 오솔길(T4)을 따라 달린다
+  const trail = data.layout.trails[3].line;
+  const m = newMotor(trail.x[0], trail.z[0]);
+  const follow = () => {
+    const c = trail.closestS(m.position.x, m.position.z).s;
+    const [tx, tz] = trail.pointAt(Math.min(trail.length, c + 4));
+    m.yaw = Math.atan2(-(tx - m.position.x), -(tz - m.position.z));
+  };
   m.input.move.z = 1; m.input.sprint = true;
   let tEx = null;
   for (let i = 0; i < 20 * 60 && tEx === null; i++) {
-    const t = i * DT;
-    if (Math.abs(t % 2) < DT / 2) m.yaw += 2.0; // 원을 그리며
+    if (i % 6 === 0) follow();
     m.update(DT);
-    if (m.exhausted) tEx = t;
+    if (m.exhausted) tEx = i * DT;
   }
-  run(m, 0.5);
-  console.log(`  낙엽 지면 달리기 → 고갈까지 ${tEx?.toFixed(1)}s, 심박 ${m.heartRate.toFixed(0)}bpm, 숨 ${m.breath.toFixed(2)}`);
+  run(m, 0.5, () => follow());
+  console.log(`  오솔길 달리기 → 고갈까지 ${tEx?.toFixed(1)}s, 심박 ${m.heartRate.toFixed(0)}bpm, 숨 ${m.breath.toFixed(2)}`);
   check(tEx !== null, '달리기로 스태미나 고갈');
   check(m.gait !== 'sprint', '고갈 후 달리기 불가');
   check(m.breath > 0.7, '고갈 시 거친 숨 (breath > 0.7)');
@@ -243,7 +257,7 @@ console.log('\n[5] 스태미나 고갈');
 // -------------------------------------------------------------------
 console.log('\n[6] F6 거동 불능 시뮬레이션');
 {
-  const spot = findSpot(SURFACE.LEAF_LITTER, 10, 4);
+  const spot = findSpot(SURFACE.GROUND_COVER, 3, 5);
   const m = newMotor(spot.x, spot.z);
   m.setRestriction('incapacitated', { canStand: false, canCrouch: false, canSprint: false, canJump: false, maxSpeedMultiplier: 0.5 });
   run(m, 1.5);
@@ -320,6 +334,117 @@ console.log('\n[8] raycastWorld (vision / bullet)');
   const b3 = world.raycastWorld(o3, dir3, 20, 'bullet');
   console.log(`  큰 나무: 시야 → ${v3.object?.type} ${v3.distance.toFixed(1)}m / 탄도 → ${b3.object?.type} ${b3.distance.toFixed(1)}m`);
   check(b3.object && ['bigTree', 'root', 'terrain'].includes(b3.object.type), '큰 줄기는 탄도 full');
+}
+
+// -------------------------------------------------------------------
+console.log('\n[9] 1단계 보완: 식생 지면 이동 저항·바스락 소음');
+{
+  for (const id of [SURFACE.GROUND_COVER, SURFACE.SHRUB, SURFACE.BRUSH]) {
+    const r = results[id];
+    const sp = CONFIG.surfaces[SURFACE_KEYS[id]];
+    const m = newMotor(r.spot.x, r.spot.z, r.axis);
+    let rustle = null;
+    m.on('rustle', (e) => { if (e.surface === id && rustle === null) rustle = e.radius; });
+    m.input.move.z = 1;
+    run(m, 2.5);
+    const expect = 1.6 * sp.speed * (1 - 17 * 0.005);
+    console.log(`  ${surfaceLabel(id).padEnd(12)} 속도 ${r.avg.toFixed(2)} (기대 ${expect.toFixed(2)}) · 스태미나 배율 ${sp.stamina} · 바스락 반경 ${rustle?.toFixed(1)}m`);
+    check(Math.abs(r.avg - expect) < 0.12, `${surfaceLabel(id)} 속도 배율 ${sp.speed}`);
+    check(rustle !== null && Math.abs(rustle - sp.rustle) < 0.01, `${surfaceLabel(id)} 헤치고 지나갈 때 소음 이벤트 (반경 ${sp.rustle}m)`);
+  }
+  // 엎드리면 바스락 반경이 줄어듦
+  const r = results[SURFACE.SHRUB];
+  const m = newMotor(r.spot.x, r.spot.z, r.axis);
+  m.requestStance('crouch'); run(m, 0.5); m.requestStance('prone'); run(m, 1.2);
+  let rr = null;
+  m.on('rustle', (e) => { rr = e.radius; });
+  m.input.move.z = 1; run(m, 4);
+  check(rr !== null && rr < CONFIG.surfaces.shrub.rustle * 0.7, `포복하면 덤불 소음이 작아짐 (${rr?.toFixed(1)}m)`);
+}
+
+// -------------------------------------------------------------------
+console.log('\n[10] 숲속 시야 거리 (raycastWorld vision, 눈높이 1.65m)');
+{
+  // 언덕 사면이 막는 방향은 식생 밀도와 무관하므로 따로 센다 (지형만으로 50m 안에 막히는 방향 제외)
+  const terrainOnly = (o, d, max) => {
+    for (let t = 0; t <= max; t += 0.5) {
+      const px = o.x + d.x * t, pz = o.z + d.z * t;
+      if (Math.abs(px) > data.half - 1 || Math.abs(pz) > data.half - 1) return max;
+      if (o.y < world.getTerrainHeight(px, pz)) return t;
+    }
+    return max;
+  };
+  const r = { s: 12345, f() { this.s = (this.s * 1664525 + 1013904223) >>> 0; return this.s / 4294967296; } };
+  const all = [], open = [], crouchD = [];
+  let pts = 0, tries = 0;
+  while (pts < 200 && tries++ < 40000) {
+    const x = -160 + r.f() * 320, z = -160 + r.f() * 320;
+    const v = data.vegKind[Math.floor((z + 200) / 0.5) * data.sN + Math.floor((x + 200) / 0.5)];
+    if (v !== VEG.COVER && v !== VEG.SHRUB && v !== VEG.THICKET) continue;
+    if (world.getSurfaceAt(x, z) === SURFACE.PACKED_DIRT) continue;
+    const p = { x, z };
+    world.resolveCircles(p, 0.4, -1e4, 1e4);
+    const gy = world.getTerrainHeight(p.x, p.z);
+    for (let a = 0; a < 16; a++) {
+      const ang = (a / 16) * Math.PI * 2;
+      const d = { x: Math.cos(ang), y: 0, z: Math.sin(ang) };
+      const o = { x: p.x, y: gy + 1.65, z: p.z };
+      const dist = world.raycastWorld(o, d, 120, 'vision').distance;
+      all.push(dist);
+      if (terrainOnly(o, d, 60) < 50) continue;
+      open.push(dist);
+      crouchD.push(world.raycastWorld({ x: p.x, y: gy + 1.05, z: p.z }, d, 120, 'vision').distance);
+    }
+    pts++;
+  }
+  const q = (arr, f) => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length * f)]; };
+  console.log(`  ${pts}개 지점 × 16방향 — 전체 중앙값 ${q(all, 0.5).toFixed(1)}m (사면에 막히는 방향 포함)`);
+  console.log(`  지형이 트인 ${open.length}방향: 서서 중앙값 ${q(open, 0.5).toFixed(1)}m (25% ${q(open, 0.25).toFixed(1)} · 75% ${q(open, 0.75).toFixed(1)}), 60m 넘게 트인 방향 ${(100 * open.filter((d) => d > 60).length / open.length).toFixed(0)}% / 앉아서 중앙값 ${q(crouchD, 0.5).toFixed(1)}m`);
+  check(q(open, 0.5) >= 15 && q(open, 0.5) <= 40, '일반 숲속 시야가 식생에 15~40m 안에서 막힘 (중앙값)');
+  check(q(crouchD, 0.5) < q(open, 0.5), '앉으면 덤불에 가려 시야가 더 짧아짐');
+}
+
+// -------------------------------------------------------------------
+console.log('\n[11] 노출도: 엎드리면 지피층·덤불에 묻힘');
+{
+  const light = { daylight: 1, sunOffset: { x: 0, z: 0 } };
+  for (const id of [SURFACE.GROUND_COVER, SURFACE.SHRUB, SURFACE.BRUSH]) {
+    const r = results[id];
+    const m = newMotor(r.spot.x, r.spot.z, r.axis);
+    const stand = computeExposure(m, world, light).value;
+    m.requestStance('crouch'); run(m, 0.5); m.requestStance('prone'); run(m, 1.2);
+    const prone = computeExposure(m, world, light).value;
+    console.log(`  ${surfaceLabel(id).padEnd(12)} 서기 ${stand.toFixed(2)} → 엎드리기 ${prone.toFixed(2)}`);
+    check(prone < 0.12, `${surfaceLabel(id)}: 엎드리면 노출도 0.12 미만`);
+  }
+}
+
+// -------------------------------------------------------------------
+console.log('\n[12] 얽힌 덩굴 벽·밀집 대나무: 통과 불가');
+{
+  const walls = data.circles.filter((c) => c.type === 'vineWall');
+  let blocked = 0, tested = 0;
+  for (let k = 1; k < walls.length - 1 && tested < 12; k += 7) {
+    const w = walls[k], a = walls[k - 1], b = walls[k + 1];
+    if (Math.hypot(a.x - w.x, a.z - w.z) > 1.2 || Math.hypot(b.x - w.x, b.z - w.z) > 1.2) continue; // 같은 벽의 중간 마디만
+    // 벽에 수직인 방향으로 3m 떨어진 곳에서 벽을 향해 5초간 걷기 → 반대편으로 넘어가면 실패
+    const tx = b.x - a.x, tz = b.z - a.z, tl = Math.hypot(tx, tz);
+    for (const side of [1, -1]) {
+      const nx = (-tz / tl) * side, nz = (tx / tl) * side;
+      const sx = w.x + nx * 3, sz = w.z + nz * 3;
+      if (world.getSurfaceAt(sx, sz) === SURFACE.DEEP_WATER) continue;
+      const m = newMotor(sx, sz, Math.atan2(nx, nz));
+      if (Math.hypot(m.position.x - sx, m.position.z - sz) > 0.3) continue;
+      m.input.move.z = 1;
+      let crossed = false;
+      run(m, 5, () => { if ((m.position.x - w.x) * nx + (m.position.z - w.z) * nz < 0) crossed = true; });
+      tested++;
+      if (!crossed) blocked++;
+      break;
+    }
+  }
+  console.log(`  덩굴 벽 ${data.layout.vineWalls}개 중 ${tested}곳 시험: ${blocked}곳에서 막힘`);
+  check(tested > 5 && blocked === tested, '덩굴 벽을 가로질러 넘어갈 수 없음');
 }
 
 console.log(failures ? `\n실패 ${failures}건` : '\n모든 검증 통과');

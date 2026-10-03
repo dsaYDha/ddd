@@ -76,6 +76,9 @@ export class InstancedSystem {
       mesh.castShadow = !!part.castShadow;
       mesh.receiveShadow = !!part.receiveShadow;
       mesh.name = `${name}_lod${lods.indexOf(lod)}`;
+      mesh.visible = false;
+      // 흔들림·알파가 같은 그림자용 깊이 머티리얼
+      if (part.material.userData?.depthMaterial) mesh.customDepthMaterial = part.material.userData.depthMaterial;
       mesh.userData.shadowQuality = part.shadowQuality || 'medium';
       mesh.userData.castShadowWanted = !!part.castShadow;
       this.scene.add(mesh);
@@ -169,6 +172,7 @@ export class InstancedSystem {
       for (let l = 0; l < k.meshes.length; l++) {
         for (const mesh of k.meshes[l]) {
           mesh.count = counts[l];
+          mesh.visible = counts[l] > 0;   // 빈 메시는 그리지 않음 (드로우콜 절약)
           mesh.instanceMatrix.clearUpdateRanges();
           mesh.instanceMatrix.addUpdateRange(0, counts[l] * 16);
           mesh.instanceMatrix.needsUpdate = true;

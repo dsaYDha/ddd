@@ -12,7 +12,7 @@
 import { CONFIG } from '../config.js';
 import { EventEmitter } from '../core/EventEmitter.js';
 import { approach, clamp, lerp, smoothstep, DEG } from '../core/math.js';
-import { SURFACE, surfaceProps, surfaceKey } from '../world/Surfaces.js';
+import { SURFACE, surfaceProps, surfaceKey, isVegetation } from '../world/Surfaces.js';
 
 export const STANCES = ['stand', 'crouch', 'prone'];
 
@@ -594,6 +594,15 @@ export class HumanMotor extends EventEmitter {
       waterDepth: this.ground.waterDepth, sink: this.sink, foot: Math.floor(this.gaitPhase) % 2 ? 'R' : 'L',
       onObstacle: !!this.ground.obstacle,
     });
+    // 식물을 헤치고 지나가는 소리 — 식물 종류(지면)별 반경
+    if (sp.rustle && isVegetation(this.surface) && !this.ground.obstacle) {
+      const R = CONFIG.noise.rustleGaitMul;
+      let k = R[gait] ?? 1;
+      if (this.input.quiet && gait === 'crouch') k *= 0.7;
+      const rr = sp.rustle * k;
+      this._noise(rr, 'rustle');
+      this.emit('rustle', { surface: this.surface, surfaceKey: surfaceKey(this.surface), radius: rr, gait, x: this.position.x, y: this.position.y, z: this.position.z });
+    }
   }
 
   _noise(radius, kind) {

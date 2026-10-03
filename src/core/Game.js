@@ -12,7 +12,7 @@ import { PlayerController } from '../player/PlayerController.js';
 import { CameraRig } from '../player/CameraRig.js';
 import { BreathCycle } from '../player/BreathCycle.js';
 import { Atmosphere } from '../render/Atmosphere.js';
-import { installFogChunks } from '../render/Materials.js';
+import { installShaderChunks, shared } from '../render/Materials.js';
 import { AudioEngine } from '../audio/AudioEngine.js';
 import { Footsteps } from '../audio/Footsteps.js';
 import { Ambience } from '../audio/Ambience.js';
@@ -25,6 +25,8 @@ import { surfaceProps } from '../world/Surfaces.js';
 const OBJECT_LABEL = {
   terrain: '지형', bigTree: '큰 나무', canopy: '캐노피', palm: '야자수', banana: '바나나', bamboo: '대나무',
   bambooDense: '밀집 대나무', vegetation: '풀·덤불', log: '통나무', rock: '바위', root: '뿌리', dike: '논둑', water: '물',
+  midTree: '중층 나무', sapling: '어린 나무', saplingCrown: '어린 나무 잎', treeFern: '나무고사리', treeFernCrown: '나무고사리 잎',
+  bananaLeaves: '바나나 잎', vineWall: '덩굴 벽',
 };
 
 const INCAPACITATED = { canStand: false, canCrouch: false, canSprint: false, canJump: false, maxSpeedMultiplier: 0.5 };
@@ -50,7 +52,7 @@ export class Game {
 
   async init() {
     const q = CONFIG.graphics[this.settings.get('quality')];
-    installFogChunks();
+    installShaderChunks();
 
     // ---- 렌더러
     const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: this.settings.get('quality') !== 'low', powerPreference: 'high-performance' });
@@ -68,9 +70,10 @@ export class Game {
     this.menu.setProgress(0.05, '지형 생성 중…');
     await nextFrame();
     const data = this.data = generateWorld(CONFIG.world.seed, (p, msg) => this.menu.setProgress(0.05 + p * 0.5, msg));
-    this.menu.setProgress(0.6, '식생·텍스처 생성 중…');
+    this.menu.setProgress(0.58, '식생·텍스처 생성 중…');
     await nextFrame();
-    this.world = new World(this.scene, data);
+    const antialias = !!renderer.getContext().getContextAttributes()?.antialias;
+    this.world = new World(this.scene, data, { antialias, onProgress: (p, msg) => this.menu.setProgress(0.58 + p * 0.15, msg) });
     this.query = this.world.query;
 
     // ---- 플레이어 (사람 공용 이동 컴포넌트)
@@ -100,9 +103,12 @@ export class Game {
     this.motor.on('suction', (e) => this.footsteps.suction(e));
     this.motor.on('slide', (e) => this.footsteps.slide(e));
     this.motor.on('stance', (e) => this.footsteps.stance(e));
+    this.motor.on('rustle', (e) => this.footsteps.rustle(e));
 
     // ---- UI
     this.hud = new HUD(this.uiEl);
+    // 약한 비네트 (색보정의 일부 — config.lighting.vignette)
+    this.uiEl.insertAdjacentHTML('afterbegin', `<div id="grade-vignette" style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at center, rgba(0,0,0,0) 58%, rgba(0,0,0,${CONFIG.lighting.vignette}) 100%)"></div>`);
     this.debug = new DebugOverlay(this.uiEl);
     this.controller.on('toast', (msg) => this.hud.toast(msg));
     this._buildNoiseRing();
@@ -148,6 +154,7 @@ export class Game {
     this.timer.connect?.(document);
     renderer.setAnimationLoop(() => this._frame());
     window.game = this; // 콘솔 디버그용
+    this.shared = shared;
   }
 
   applyQuality(runtime = false) {
@@ -213,6 +220,7 @@ export class Game {
     this.controller.pitch = 0;
     this.motor.teleport(x, z, yaw);
     this.rig.eyeY = this.motor.eyeY;
+    this.rig.update(0, this.controller.yaw, this.controller.pitch);   // 카메라를 먼저 옮긴 뒤 주변 식생을 한 번에 갱신
     this.world.update(this.camera, true);
   }
 
@@ -267,7 +275,10 @@ export class Game {
     this.breath.update(dt, m.breath);
     this.rig.update(dt, this.controller.yaw, this.controller.pitch);
     this.atmosphere.update(dt, m.position, this.camera);
+    // 플레이어가 지나가면 식물이 밀려남 (셰이더 유니폼 — 4단계 적 병사는 1~3번 칸을 쓴다)
+    shared.uPush.value[0].set(m.position.x, m.position.y, m.position.z, CONFIG.interaction.pushRadius * (m.stance === 'prone' ? 1.25 : 1));
     this.world.update(this.camera);
+    this._autoQuality(dt);
 
     // 소리
     const preset = CONFIG.timeOfDay.presets[this.atmosphere.tod];
@@ -301,11 +312,35 @@ export class Game {
       motor: m, yaw: this.controller.yaw, exposure: this.exposure, rays: this.rays,
       noiseMask: this.noise.maskFactor(), wetness: this.atmosphere.wetness, rain: this.atmosphere.rainIntensity,
       tod: this.atmosphere.tod, weather: this.atmosphere.weather, quality: this.settings.get('quality'),
-      render: this.renderer.info.render, veg: this.world.instanced.stats, testPoints: this.data.testPoints,
+      render: this.renderer.info.render, veg: this.world.stats, testPoints: this.data.testPoints,
     });
 
     this.renderer.render(this.scene, this.camera);
     this.input.endFrame();
+  }
+
+  /** 첫 실행 때 프레임이 계속 낮으면 품질을 한 단계 낮추고 알림 (config.performance) */
+  _autoQuality(dt) {
+    const P = CONFIG.performance;
+    if (!P.autoQuality || this._aqDone) return;
+    const a = this._aq || (this._aq = { t: 0, frames: 0, real: 0, last: performance.now() });
+    const now = performance.now();
+    const real = (now - a.last) / 1000;
+    a.last = now;
+    a.t += dt;
+    if (a.t < 3) return;              // 시작 직후(셰이더 준비·청크 갱신)는 제외
+    a.frames++; a.real += real;
+    if (a.real < 6) return;
+    const fps = a.frames / a.real;
+    this._aqDone = true;
+    let checked = false;
+    try { checked = localStorage.getItem('jungle-fps-autoq') === '1'; localStorage.setItem('jungle-fps-autoq', '1'); } catch { /* 무시 */ }
+    if (checked || fps >= P.autoQualityMinFps) return;
+    const order = ['high', 'medium', 'low'];
+    const i = order.indexOf(this.settings.get('quality'));
+    if (i < 0 || i >= order.length - 1) return;
+    this.settings.set('quality', order[i + 1]);
+    this.hud.toast(`프레임이 낮아 그래픽 품질을 '${CONFIG.graphics[order[i + 1]].label}'으로 낮췄습니다 (Esc 메뉴에서 변경)`, 4);
   }
 
   _nearWater() {

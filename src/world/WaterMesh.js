@@ -34,6 +34,7 @@ uniform float uRain;
 varying float vDepth;
 varying vec3 vWater;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
+  gClassColor = vec4( 0.0, 1.0, 1.0, 1.0 );   // 검증용 분류: 물
   // 탁한 물: 얕은 가장자리만 살짝 비침
   diffuseColor.a = mix( vWater.z, 0.93, smoothstep( vWater.z > 0.05 ? 0.0 : 0.06, vWater.y, vDepth ) );`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
@@ -280,7 +281,7 @@ export function buildDikes(data, textures) {
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nuniform float uWetness;')
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = clamp( roughnessFactor - uWetness * 0.45, 0.15, 1.0 );')
-      .replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb *= 1.0 - uWetness * 0.3;');
+      .replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb *= 1.0 - uWetness * 0.3;\n  gClassColor = vec4( 0.0, 1.0, 1.0, 1.0 );');
   });
   const m = new THREE.Mesh(g, mat);
   m.castShadow = true;

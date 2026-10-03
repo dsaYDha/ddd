@@ -52,7 +52,8 @@ export class DebugOverlay {
     const net = m.regenRate - m.drainRate;
     const ray = i.rays;
     const lines = [
-      `FPS ${f1(this.fps)} (${f1(this.ms)} ms)   드로우콜 ${i.render.calls}  삼각형 ${(i.render.triangles / 1000).toFixed(0)}k   식생 ${i.veg.drawn}/${i.veg.instances}`,
+      `FPS ${f1(this.fps)} (${f1(this.ms)} ms)   드로우콜 ${i.render.calls}  삼각형 ${(i.render.triangles / 1000).toFixed(0)}k`,
+      `화면 내 인스턴스 ${i.veg.drawn + i.veg.groundCover} (배치 식생 ${i.veg.drawn}/${i.veg.instances} · 지피층 ${i.veg.groundCover})`,
       `좌표  x ${f2(p.x)}  y ${f2(p.y)}  z ${f2(p.z)}   방위 ${yawDeg.toFixed(0)}°   눈높이 ${f2(m.eyeY)}`,
       `지면  ${surfaceLabel(m.surface)} [${surfaceKey(m.surface)}]${m.ground.onDike ? ' · 논둑 위' : ''}${m.ground.obstacle ? ' · 장애물 위(' + m.ground.obstacle.type + ')' : ''}`,
       `빠진 깊이 ${(m.sink * 100).toFixed(0)} cm${m.extracting ? '  ← 발 빼는 중' : ''}   물 깊이 ${(m.ground.waterDepth * 100).toFixed(0)} cm   경사 ${f1(m.slope.deg)}° (진행방향 ${f1(m.uphillDeg)}°)`,
@@ -67,7 +68,7 @@ export class DebugOverlay {
       `탄도 레이  ${ray.bullet}`,
       `${CONFIG.timeOfDay.presets[i.tod].label} / ${CONFIG.weather.presets[i.weather].label}   품질 ${CONFIG.graphics[i.quality].label}`,
       '',
-      '[1~8] 테스트 지점 이동:',
+      '[1~9] 테스트 지점 이동:',
       ...i.testPoints.map((t) => `  ${t.key} ${t.name}`),
       '[F6] 거동 불능 시뮬레이션   [Esc] 설정',
     ];

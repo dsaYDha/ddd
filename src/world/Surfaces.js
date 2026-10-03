@@ -10,7 +10,9 @@ export const SURFACE = Object.freeze({
   PADDY: 5,
   SHALLOW_WATER: 6,
   DEEP_WATER: 7,
-  BRUSH: 8,
+  BRUSH: 8,          // 키 큰 풀·밀집 덤불
+  GROUND_COVER: 9,   // 낮은 지피식물
+  SHRUB: 10,         // 무릎~허리 덤불
 });
 
 export const SURFACE_COUNT = SURFACE_KEYS.length;
@@ -30,3 +32,5 @@ export function surfaceLabel(id) {
 
 export const isMud = (id) => id === SURFACE.SHALLOW_MUD || id === SURFACE.DEEP_MUD || id === SURFACE.PADDY;
 export const isWater = (id) => id === SURFACE.SHALLOW_WATER || id === SURFACE.DEEP_WATER;
+/** 식물을 헤치고 지나가는 지면 (바스락 소음) */
+export const isVegetation = (id) => id === SURFACE.GROUND_COVER || id === SURFACE.SHRUB || id === SURFACE.BRUSH;

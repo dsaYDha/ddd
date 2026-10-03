@@ -21,10 +21,7 @@ export function computeExposure(motor, query, light) {
   const r = E.coverRadius;
   let conceal = 0, wsum = 0;
   for (const [sx, sz, w] of SAMPLES) {
-    const c = query.getCover(motor.position.x + sx * r * 0.6, motor.position.z + sz * r * 0.6);
-    const density = 1 - Math.exp(-c.sigma * 1.6);
-    const heightCover = clamp(c.height / Math.max(0.3, bodyH), 0, 1);
-    conceal += density * heightCover * w;
+    conceal += query.coverConcealment(motor.position.x + sx * r * 0.6, motor.position.z + sz * r * 0.6, bodyH) * w;
     wsum += w;
   }
   conceal /= wsum;
