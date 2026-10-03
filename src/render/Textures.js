@@ -156,11 +156,8 @@ export function makeMudTexture(seed = 13) {
     const x = rng.range(0, S), y = rng.range(0, S), r = rng.range(10, 26);
     const a = rng.range(0, 6.28);
     wrapDraw(S, x, y, r, (px, py) => {
-      ctx.fillStyle = hsl(30, 25, rng.range(12, 18), 0.6);
+      ctx.fillStyle = hsl(30, 25, rng.range(12, 18), 0.45);
       ctx.beginPath(); ctx.ellipse(px, py, r, r * 0.55, a, 0, 6.28); ctx.fill();
-      ctx.strokeStyle = hsl(32, 25, 30, 0.35);
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.ellipse(px, py, r * 1.05, r * 0.6, a, 0, 6.28); ctx.stroke();
     });
   }
   return toTexture(c);

@@ -780,6 +780,16 @@ export function generateWorld(seed = CONFIG.world.seed, onProgress = () => {}) {
       }
     }
   }
+  // 모든 배치 오브젝트에 태그 연결 (config.objects 참조)
+  const TAG_OF = {
+    bigTree: 'bigTree', palm: 'palm', banana: 'banana', bamboo: 'bamboo', bambooDense: 'bambooDense', sapling: 'sapling',
+    fern: 'fern', grass: 'elephantGrass', shrub: 'shrub', rice: 'rice', log: 'log', rock: 'rock', root: 'root',
+  };
+  for (const [key, list] of Object.entries(P)) {
+    const tags = T[TAG_OF[key]];
+    if (!tags) continue;
+    for (const it of list) { it.type ??= TAG_OF[key]; it.tags ??= tags; }
+  }
   data.timings.placement = now() - t0;
   onProgress(0.7, '식생 배치');
 

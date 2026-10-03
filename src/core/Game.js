@@ -133,7 +133,11 @@ export class Game {
     this.rig.update(0, this.controller.yaw, this.controller.pitch);
     this.atmosphere.update(0.016, this.motor.position, this.camera);
     this.world.update(this.camera, true);
-    try { await this.renderer.compileAsync(this.scene, this.camera); } catch { /* 일부 환경 미지원 */ }
+    try {
+      // 병렬 컴파일 확장이 없으면 compileAsync가 경고를 내므로 동기 컴파일 사용
+      if (this.renderer.extensions.has('KHR_parallel_shader_compile')) await this.renderer.compileAsync(this.scene, this.camera);
+      else this.renderer.compile(this.scene, this.camera);
+    } catch { /* 일부 환경 미지원 */ }
     this.renderer.render(this.scene, this.camera);
     this.menu.setProgress(1, '준비 완료');
     this.menu.ready();

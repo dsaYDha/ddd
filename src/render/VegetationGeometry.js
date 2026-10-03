@@ -347,7 +347,7 @@ export function buildElephantGrass(variant, lod) {
       const px = ox + dirx * lean * t * t * h * 0.5, pz = oz + dirz * lean * t * t * h * 0.5;
       const py = t * h - lean * t * t * t * 0.4;
       const ww = w * (1 - t * 0.9);
-      const g = new THREE.Color().setHSL(0.2 - (tipDry ? 0.06 : 0) * t, 0.3, 0.17 + 0.17 * t);
+      const g = new THREE.Color().setHSL(0.2 - (tipDry ? 0.05 : 0) * t, 0.36, 0.1 + 0.07 * t);
       mb.vertex(px - sx * ww, py, pz - sz * ww, dirx * 0.3, 0.9, dirz * 0.3, 0, t, g.r, g.g, g.b);
       mb.vertex(px + sx * ww, py, pz + sz * ww, dirx * 0.3, 0.9, dirz * 0.3, 1, t, g.r, g.g, g.b);
       if (k > 0) { const b = base + (k - 1) * 2; mb.quad(b, b + 2, b + 3, b + 1); }
