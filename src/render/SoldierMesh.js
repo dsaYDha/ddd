@@ -29,12 +29,21 @@ const GEAR = {
   belt: C('#3a3726'), pouch: C('#4a4a30'), boot: C('#2a241b'), hatPlain: C('#5c5d3c'),
   metal: C('#1c1d1c'), furniture: C('#2a2b24'), wood: C('#4a3424'), mag: C('#222320'),
 };
+// 7단계 아군: 다른 위장복 (둥근 잎 무늬 — 셰이더 camo 값 100 이상) + 철모 (천 덮개). 국적 표지 없음.
+const ALLY_VARIANTS = [
+  { cloth: C('#626c45'), trousersK: 0.92, skin: C('#b08d6c'), helmet: C('#4c5233'), build: 1.0 },
+  { cloth: C('#5d6844'), trousersK: 0.9, skin: C('#8f6c4f'), helmet: C('#50563a'), build: 1.04 },
+  { cloth: C('#677049'), trousersK: 0.9, skin: C('#c29d7c'), helmet: C('#474d30'), build: 0.97 },
+  { cloth: C('#5a6441'), trousersK: 0.94, skin: C('#9c7a5b'), helmet: C('#4e5436'), build: 1.03 },
+  { cloth: C('#636b47'), trousersK: 0.9, skin: C('#7b5b40'), helmet: C('#4a5034'), build: 0.98 },
+  { cloth: C('#5f6943'), trousersK: 0.91, skin: C('#a8866a'), helmet: C('#4d5335'), build: 1.05 },
+];
 
 // ---------------------------------------------------------------
 // 셰이더: 정글 위장 무늬 (camo > 0.5 인 꼭짓점 — 값 자체가 무늬 시드)
 // ---------------------------------------------------------------
 function patchCamo(material) {
-  return addPatch(material, 'soldierCamo1', (shader) => {
+  return addPatch(material, 'soldierCamo2', (shader) => {
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nattribute float camo;\nvarying float vCamo;\nvarying vec3 vCamoP;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vCamo = camo;\n  vCamoP = position;');
@@ -49,7 +58,17 @@ float camoN( vec3 x ) {
               mix( mix( camoH( i + vec3( 0.0, 0.0, 1.0 ) ), camoH( i + vec3( 1.0, 0.0, 1.0 ) ), f.x ), mix( camoH( i + vec3( 0.0, 1.0, 1.0 ) ), camoH( i + 1.0 ), f.x ), f.y ), f.z );
 }`)
       .replace('#include <color_fragment>', `#include <color_fragment>
-  if ( vCamo > 0.5 ) {
+  if ( vCamo > 100.5 ) {
+    // 7단계 아군: 둥근 잎 얼룩 (밝은 녹색 바탕 + 갈색·짙은 녹색·작은 검은 점) — 가까이선 달라 보이고, 멀리·어두우면 비슷한 올리브색
+    vec3 cp = vCamoP * vec3( 5.6 ) + vCamo * vec3( 1.31, 2.17, 0.73 );
+    float n1 = camoN( cp ) * 0.6 + camoN( cp * 2.1 + 5.3 ) * 0.4;
+    float n2 = camoN( cp * 1.2 + 17.0 ) * 0.6 + camoN( cp * 2.7 + 9.0 ) * 0.4;
+    vec3 base = diffuseColor.rgb;
+    vec3 c = mix( base, base * vec3( 0.95, 0.72, 0.52 ), smoothstep( 0.5, 0.54, n2 ) );   // 갈색 잎
+    c = mix( c, base * vec3( 0.5, 0.62, 0.42 ), smoothstep( 0.55, 0.59, n1 ) );          // 짙은 녹색
+    c = mix( c, base * 0.25, smoothstep( 0.73, 0.76, n1 ) );                              // 검은 점
+    diffuseColor.rgb = c;
+  } else if ( vCamo > 0.5 ) {
     // 가로로 길쭉한 얼룩 (호랑이 줄무늬 계열) — 국소 좌표 m 기준
     vec3 cp = vCamoP * vec3( 4.2, 8.5, 4.2 ) + vCamo * vec3( 7.31, 3.17, 5.73 );
     float n1 = camoN( cp ) * 0.62 + camoN( cp * 2.3 + 3.1 ) * 0.38;
@@ -216,6 +235,71 @@ function addHat(buf, head, color, camo) {
   }
 }
 
+/** 7단계 철모: 머리를 덮는 둥근 돔 (귀 위까지) + 짧은 챙 — 천 덮개라 위장 무늬 */
+function addHelmet(buf, head, color, camo) {
+  const a = V3(head.a.x, head.a.y, head.a.z), b = V3(head.b.x, head.b.y, head.b.z);
+  const up = V3().subVectors(b, a).normalize();
+  const r = head.r * 1.32;
+  const h = Math.abs(up.y) > 0.9 ? V3(1, 0, 0) : V3(0, 1, 0);
+  const u = V3().crossVectors(up, h).normalize();
+  const v = V3().crossVectors(u, up);
+  const center = b.clone().addScaledVector(up, -0.02);
+  const N = 16, RINGS = 5;
+  const base = buf.pos.length / 3;
+  // 돔: 위도 0 (꼭대기) → 95° (가장자리, 살짝 벌어짐)
+  for (let i = 0; i <= RINGS; i++) {
+    const lat = (i / RINGS) * (Math.PI / 2) * 1.06;
+    const cr = Math.sin(lat) * r * (i === RINGS ? 1.06 : 1), cy = Math.cos(lat) * r * 0.82;
+    for (let k = 0; k <= N; k++) {
+      const th = (k / N) * Math.PI * 2;
+      const dir = u.clone().multiplyScalar(Math.cos(th)).addScaledVector(v, Math.sin(th));
+      const p = center.clone().addScaledVector(dir, cr).addScaledVector(up, cy);
+      const n = dir.clone().multiplyScalar(Math.sin(lat)).addScaledVector(up, Math.cos(lat)).normalize();
+      buf.pos.push(p.x, p.y, p.z); buf.nor.push(n.x, n.y, n.z);
+      buf.col.push(color.r, color.g, color.b); buf.camo.push(camo);
+    }
+  }
+  for (let i = 0; i < RINGS; i++) {
+    for (let k = 0; k < N; k++) {
+      const p0 = base + i * (N + 1) + k, p1 = p0 + 1, p2 = p0 + N + 2, p3 = p0 + N + 1;
+      buf.idx.push(p0, p1, p2, p0, p2, p3);   // 바깥을 향함
+    }
+  }
+  // 아래쪽 안감 (어두운 고리 — 안이 보일 때)
+  const rim = base + RINGS * (N + 1);
+  const inner = buf.pos.length / 3;
+  const dark = C('#1e1f18');
+  for (let k = 0; k <= N; k++) {
+    const p = V3(buf.pos[(rim + k) * 3], buf.pos[(rim + k) * 3 + 1], buf.pos[(rim + k) * 3 + 2]);
+    const q = p.clone().lerp(center, 0.25);
+    for (const w of [p, q]) { buf.pos.push(w.x, w.y, w.z); buf.nor.push(-up.x, -up.y, -up.z); buf.col.push(dark.r, dark.g, dark.b); buf.camo.push(0); }
+  }
+  for (let k = 0; k < N; k++) { const p0 = inner + k * 2; buf.idx.push(p0, p0 + 3, p0 + 1, p0, p0 + 2, p0 + 3); }   // 아래를 향함
+}
+
+/** 7단계 아군 소총 (플레이어와 같은 7.62 계열 — 나무 개머리판·총열덮개, 굽은 30발 탄창, 권총형 손잡이) */
+function addRifle762(buf, caps) {
+  const hR = vec(caps.find((c) => c.part === 'forearmR').b);
+  const hL = vec(caps.find((c) => c.part === 'forearmL').b);
+  const f = V3().subVectors(hL, hR);
+  f.x *= 0.35; f.y *= 0.35;
+  f.normalize();
+  let r = V3().crossVectors(f, V3(0, 1, 0));
+  if (r.lengthSq() < 1e-6) r = V3(1, 0, 0);
+  r.normalize();
+  const u = V3().crossVectors(r, f).normalize();
+  const bore = hR.clone().addScaledVector(u, 0.075);
+  const at = (s, du = 0) => bore.clone().addScaledVector(f, s).addScaledVector(u, du);
+  addBox(buf, at(-0.19, -0.03), r, u, f, 0.021, 0.052, 0.14, GEAR.wood);       // 나무 개머리판
+  addBox(buf, at(0.04, -0.005), r, u, f, 0.024, 0.04, 0.12, GEAR.metal);       // 몸통
+  addBox(buf, at(0.11, -0.08), r, u, f, 0.015, 0.05, 0.032, GEAR.mag);         // 굽은 탄창 (두 토막)
+  addBox(buf, at(0.14, -0.155), r, u.clone().addScaledVector(f, 0.35).normalize(), f, 0.015, 0.04, 0.03, GEAR.mag);
+  addBox(buf, at(-0.035, -0.065), r, u, f, 0.012, 0.038, 0.016, GEAR.wood);    // 권총형 손잡이
+  addBox(buf, at(0.3, -0.008), r, u, f, 0.025, 0.03, 0.15, GEAR.wood);         // 나무 총열덮개
+  addCylinder(buf, at(0.42, 0.01), at(0.72, 0.01), 0.011, 0.01, GEAR.metal, 0, 6);
+  addBox(buf, at(0.66, 0.042), r, u, f, 0.005, 0.022, 0.008, GEAR.metal);      // 가늠쇠
+}
+
 const mid = (p, q) => V3((p.x + q.x) / 2, (p.y + q.y) / 2, (p.z + q.z) / 2);
 const vec = (p) => V3(p.x, p.y, p.z);
 
@@ -291,10 +375,12 @@ function addWeapon(buf, caps, kind) {
   }
 }
 
-/** 병사 한 명 모양 (국소 자세, 변형, 무기) → BufferGeometry */
-export function buildSoldierGeometry(localPose, variant = 0, weapon = 'rifle') {
-  const V = VARIANTS[((variant % VARIANTS.length) + VARIANTS.length) % VARIANTS.length];
-  const seed = 1 + variant * 1.37;
+/** 병사 한 명 모양 (국소 자세, 변형, 무기, 편 'enemy'|'ally') → BufferGeometry */
+export function buildSoldierGeometry(localPose, variant = 0, weapon = 'rifle', side = 'enemy') {
+  const ally = side === 'ally';
+  const VV = ally ? ALLY_VARIANTS : VARIANTS;
+  const V = VV[((variant % VV.length) + VV.length) % VV.length];
+  const seed = (ally ? 101 : 1) + variant * 1.37;
   const caps = buildHitboxes(localPose, []);
   const buf = newBuf();
   const trousers = V.cloth.clone().multiplyScalar(V.trousersK);
@@ -313,9 +399,11 @@ export function buildSoldierGeometry(localPose, variant = 0, weapon = 'rifle') {
     addCapsule(buf, cap.a, cap.b, cap.r * build, fn);
   }
   const F = bodyFrame(caps);
-  addHat(buf, caps.find((c) => c.part === 'head'), V.camoHat ? V.cloth : GEAR.hatPlain, V.camoHat ? seed : 0);
+  if (ally) addHelmet(buf, caps.find((c) => c.part === 'head'), V.helmet, seed + 0.5);
+  else addHat(buf, caps.find((c) => c.part === 'head'), V.camoHat ? V.cloth : GEAR.hatPlain, V.camoHat ? seed : 0);
   addBelt(buf, caps, F);
-  if (weapon !== 'none') addWeapon(buf, caps, weapon);   // 5단계: 플레이어가 주워 간 총은 없음
+  if (weapon === 'rifle762') addRifle762(buf, caps);
+  else if (weapon !== 'none') addWeapon(buf, caps, weapon);   // 5단계: 플레이어가 주워 간 총은 없음
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(buf.pos, 3));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(buf.nor, 3));
@@ -540,12 +628,18 @@ export class SoldierMeshes {
   }
 
   // -------------------------------------------------------------
-  _kind(s) { return s.weaponTaken ? 'none' : s.weaponData?.bipod ? 'lmg' : 'rifle'; }
+  _kind(s) {
+    if (s.weaponTaken) return 'none';
+    if (s.weaponData?.bipod) return 'lmg';
+    return s.weaponData?.family === 'player' ? 'rifle762' : 'rifle';
+  }
+
+  _side(s) { return s.faction === 'friend' ? 'ally' : 'enemy'; }
 
   _acquire(s, pose) {
-    const key = `${s.variant ?? 0}|${this._kind(s)}|${shapeKey(pose)}`;
+    const key = `${this._side(s)}|${s.variant ?? 0}|${this._kind(s)}|${shapeKey(pose)}`;
     let e = this._geo.get(key);
-    if (!e) { e = { geometry: buildSoldierGeometry(localPose(pose), s.variant ?? 0, this._kind(s)), users: 0 }; this._geo.set(key, e); }
+    if (!e) { e = { geometry: buildSoldierGeometry(localPose(pose), s.variant ?? 0, this._kind(s), this._side(s)), users: 0 }; this._geo.set(key, e); }
     e.users++;
     return { key, geometry: e.geometry };
   }
@@ -577,7 +671,7 @@ export class SoldierMeshes {
 
   _place(s, item) {
     const pose = s.pose();
-    const key = `${s.variant ?? 0}|${this._kind(s)}|${shapeKey(pose)}`;
+    const key = `${this._side(s)}|${s.variant ?? 0}|${this._kind(s)}|${shapeKey(pose)}`;
     if (key !== item.key) {
       const next = this._acquire(s, pose);
       this._release(item.key);

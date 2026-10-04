@@ -3,6 +3,8 @@
 //  · 추정 플레이어 위치 (기억): 십자 + 불확실성 원, 병사 → 추정 위치 선 (오래될수록 흐림)
 //  · 경로: 남은 길 (A* 경로 점), 엄폐물: 숨는 점에 세운 막대
 //  · 색: 순찰 초록 · 의심 노랑 · 경계 주황 · 교전 빨강 · 수색 하늘 · 매복 보라 · 후퇴/도주 회색
+//  · 7단계 아군: 이름·역할·분대 상태 (평상 청록 / 교전 분홍), 따르는 명령 (이동·사격·대형·받고 기다리는 명령 수), 제압 60 이상이면 '명령 거부',
+//    의무병 처치·업기·피로·갈증
 import * as THREE from 'three';
 import { CONFIG } from '../config.js';
 
@@ -14,7 +16,12 @@ const STATE_LABEL = {
   patrol: '순찰', suspicious: '의심', alert: '경계', engaged: '교전', search: '수색', ambush: '매복', retreat: '후퇴', rout: '도주',
 };
 const ROLE_LABEL = { leader: '분대장', rifleman: '소총수', mg: '기관총', flank: '기동조', point: '첨병' };
-const MAX_VERTS = 16 * 220;
+const ALLY_COLOR = { calm: [0.35, 0.9, 0.95], contact: [1.0, 0.45, 0.8] };
+const JOB_LABEL = CONFIG.allies?.roleLabels ?? {};
+const MOVE_LABEL = { follow: '따라옴', halt: '정지', hold: '대기', moveTo: '이동', retreat: '후퇴' };
+const FIRE_LABEL = { free: '자유', hold: '금지', onMyShot: '내가 쏘면', suppress: '제압' };
+const FORM_LABEL = { auto: '대형 자동', file: '일렬', wedge: '쐐기', spread: '산개' };
+const MAX_VERTS = 22 * 220;
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -55,7 +62,8 @@ export class AIDebug {
     const W = window.innerWidth, H = window.innerHeight;
     for (const s of soldiers) {
       const st = s.squad?.state ?? 'patrol';
-      const col = s.alive ? (STATE_COLOR[st] ?? [1, 1, 1]) : [0.3, 0.3, 0.3];
+      const friend = s.faction === 'friend';
+      const col = !s.alive ? [0.3, 0.3, 0.3] : friend ? (ALLY_COLOR[st] ?? ALLY_COLOR.calm) : (STATE_COLOR[st] ?? [1, 1, 1]);
       const e = s.eye, p = s.motor.position;
       if (s.alive) this._soldierLines(s, e, p, col, now);
       // 글자표
@@ -69,7 +77,7 @@ export class AIDebug {
       el.style.transform = `translate(${((v.x + 1) / 2 * W).toFixed(0)}px, ${((1 - v.y) / 2 * H).toFixed(0)}px) translate(-50%, -100%)`;
       const c = `rgb(${col.map((k) => Math.round(k * 255)).join(',')})`;
       const role = ROLE_LABEL[s.isPoint && s.role === 'rifleman' ? 'point' : s.role] ?? s.role;
-      const html = s.alive
+      const html = friend ? this._allyHtml(s, c, dist) : s.alive
         ? `<b style="color:${c}">#${s.id} ${esc(role)} · ${STATE_LABEL[st] ?? st}</b> <span class="m">${esc(s.mode)}${s.fire?.mode && s.fire.mode !== 'none' ? ' · 사격:' + s.fire.mode : ''}</span><br>`
           + `발견 ${s.perception.meter.toFixed(2)} · 제압 ${Math.round(s.suppression)} · 사기 ${Math.round(s.squad?.morale ?? 0)}`
           + ` · 탄 ${s.shooter.weapon.totalRounds}${s.injuries.wounds.length ? ' · 부상 ' + s.injuries.wounds.length : ''} · ${dist.toFixed(0)}m`
@@ -81,6 +89,26 @@ export class AIDebug {
     g.attributes.position.needsUpdate = true;
     g.attributes.color.needsUpdate = true;
     g.setDrawRange(0, this._n);
+  }
+
+  /** 7단계 아군 글자표 */
+  _allyHtml(s, c, dist) {
+    if (!s.alive) return `<span style="color:#888">${esc(s.name)} 전사</span>`;
+    const o = s.ord ?? {}, sup = Math.round(s.suppression);
+    const st = s.squad?.state === 'contact' ? '교전' : '평상';
+    const extra = [];
+    if (s.pendingOrders?.length) extra.push(`받은 명령 ${s.pendingOrders.length}`);
+    if (s.treat) extra.push(`처치 → ${esc(s.treat.patient?.name ?? '플레이어')}${s.treat.active ? ` ${(s.treat.t / Math.max(0.1, s.treat.duration) * 100).toFixed(0)}%` : ''}`);
+    if (s.carry) extra.push(`업기 ${s.carry.phase}`);
+    if (s.carriedBy) extra.push('업혀 감');
+    if (s.give) extra.push('탄창 주러');
+    if (s.hasRadio) extra.push('무전기');
+    return `<b style="color:${c}">${esc(s.name)} ${esc(JOB_LABEL[s.job] ?? s.job)} · ${st}</b> <span class="m">${esc(s.mode)}${s.fire?.mode && s.fire.mode !== 'none' ? ' · 사격:' + s.fire.mode : ''}</span><br>`
+      + `명령 ${MOVE_LABEL[o.move] ?? o.move}${o.prone ? '·엎드림' : ''} / 사격 ${FIRE_LABEL[o.fire] ?? o.fire} / ${FORM_LABEL[o.formation] ?? o.formation}`
+      + ` · 제압 ${sup}${sup >= (CONFIG.ai.suppression?.pinned ?? 60) ? ' (명령 거부)' : ''}<br>`
+      + `발견 ${s.perception.meter.toFixed(2)} · 탄 ${s.shooter.weapon.totalRounds}${s.injuries.wounds.length ? ' · 부상 ' + s.injuries.wounds.length + ' · 혈액 ' + Math.round(s.injuries.blood) : ''}`
+      + ` · 피로 ${Math.round(s.endurance?.fatigue ?? 0)} · 갈증 ${Math.round(s.endurance?.thirst ?? 0)} · ${dist.toFixed(0)}m`
+      + (extra.length ? `<br>${extra.join(' · ')}` : '');
   }
 
   clear() {

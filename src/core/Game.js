@@ -16,6 +16,9 @@
 //  6단계: 부비트랩 (combat/Traps — 발견·탐침 Y·해제 F·폭발 파편, render/TrapMesh), 밤 (world/Night — 빛 수준·암순응·조명탄·손전등 L,
 //  render/NightFX·Atmosphere 달·별), 몸 (human/Endurance 피로·갈증·수통 U·개울 F, render/PlayerBody 내려다보는 몸·붕대),
 //  총 다루기 (combat/Handling 총구 막힘·덤불 걸림), 소리 (audio/FieldAudio, 밤 환경음), F10 6단계 시험 메뉴 (디버그 모드).
+//  7단계: 아군 분대 (ai/FriendSquad·Ally — 적과 같은 규칙, 분대 모드에서), J 명령 휠 (ui/OrderWheel — 좌클릭 수신호 · 우클릭 외치기,
+//  수신호 팔 동작 FieldHands), 무전 지원 화력·보급 (combat/FireSupport — M 지도 연필로 지점 → 요청 메뉴, render/SupportMesh 크레이터·
+//  상자·던진 탄창), F 상호작용 (아군 치료·무전기 줍기·물자 회수·보급 상자), 분대 말 자막·합성 목소리, 디버그 O/I/P.
 import * as THREE from 'three';
 import { CONFIG } from '../config.js';
 import { Settings } from './Settings.js';
@@ -71,6 +74,10 @@ import { PlayerBody } from '../render/PlayerBody.js';
 import { FieldHands } from '../ui/FieldHands.js';
 import { FieldAudio } from '../audio/FieldAudio.js';
 import { muzzleBlock, snagDelay, foliageSigma } from '../combat/Handling.js';
+import { FireSupport, SUPPORT_LABELS } from '../combat/FireSupport.js';
+import { FriendSquad, iGa, ORDER_LABELS } from '../ai/FriendSquad.js';
+import { OrderWheel } from '../ui/OrderWheel.js';
+import { SupportMeshes } from '../render/SupportMesh.js';
 
 const OBJECT_LABEL = {
   terrain: '지형', bigTree: '큰 나무', canopy: '캐노피', palm: '야자수', banana: '바나나', bamboo: '대나무',
@@ -116,6 +123,13 @@ const KNOWN_TEXT = {
   probe: { mine: '탐침 끝에 단단한 것이 걸린다 — 지뢰다', spikePit: '탐침이 쑥 빠진다 — 아래가 비었다, 구덩이다' },
 };
 const MOON_KEYS = ['full', 'half', 'new'];
+// 7단계: 분대원의 고함 (말 자막이 없는 것 — 재장전·도움) · 내 목소리 · 요청 거절 사유
+const ALLY_SHOUT = { reload: '재장전!', help: '도와줘!' };
+const PLAYER_VOICE = { f0: 112, formant: 0.98 };
+const SUPPORT_REFUSED = {
+  none: '남은 요청이 없다', day: '조명탄은 밤에만 쓴다', open: '헬기가 내릴 수 없다 — 논·강가 같은 트인 곳을 골라야 한다',
+  busy: '같은 요청이 이미 진행 중이다', kind: '요청할 수 없다',
+};
 const SURF_SHALLOW = Object.keys(CONFIG.surfaces).indexOf('shallowWater'), SURF_DEEP = Object.keys(CONFIG.surfaces).indexOf('deepWater');
 const SNAG_RNG = { chance: (p) => Math.random() < p };
 
@@ -227,6 +241,11 @@ export class Game {
       ambient: () => this.light.ambient,            // 6단계: 그 자리 빛 수준 (밤)
       lamp: () => this._lampForAI(),                // 6단계: 켜 둔 손전등
     });
+    // 7단계: 무전 지원 화력·보급 (위험 근접 = 아군 실제 위치) · 분대원 밤 함정 발견·피로용 환경
+    this.support = new FireSupport({ combat: this.combat, query: this.query, noise: this.noise, flares: this.enemies.flares, friendlies: () => this._friendlyPositions() });
+    this.enemies.lightAtGround = (x, y, z) => this._lightAtGround(x, y, z);
+    this.enemies.fieldEnv = { heat: 0, rain: 0, night: 0, wetness: 0 };
+    this._squadUI = { radioCarried: false, mapMenu: null, ctx: null, signal: null, heli: null, heliStopAt: 0, craters: 0, treatAlly: null };
     this._spawn = { open: false, index: 0, kind: 0, size: 5, mg: true, dist: 1 };
     this._aiMs = 0;
     this._aiRays = { last: 0, perFrame: 0 };
@@ -271,6 +290,7 @@ export class Game {
     this.trapMeshes = new TrapMeshes(this.scene, this.query);
     this.playerBody = new PlayerBody(this.scene);
     this.nightFX = new NightFX(this.scene, this.camera);
+    this.supportMeshes = new SupportMeshes(this.scene, this.query);
     this._vmLight = {
       sunColor: new THREE.Color(), sunDir: new THREE.Vector3(0, 1, 0), skyColor: new THREE.Color(), groundColor: new THREE.Color(),
       hemiIntensity: 1, shade: -1, sunVisible: 1, flash: 0,
@@ -295,6 +315,7 @@ export class Game {
     this.wristGear = new WristGear(this.uiEl);
     this.refillView = new RefillView(this.uiEl);
     this.fieldHands = new FieldHands(this.uiEl);
+    this.orderWheel = new OrderWheel(this.uiEl);
     this.missionAudio = new MissionAudio(this.audio);
     this.screens.setProgress(0.84, '임무 지도 준비 중…');
     await nextFrame();
@@ -304,6 +325,7 @@ export class Game {
     this.runtime.on('result', (e) => this._showResult(e.summary));
     this._wirePouch();
     this._wireField();
+    this._wireSquad();
     this._hands = { busy: false, restricted: false, interact: null };
 
     // ---- 설정 반영
@@ -463,7 +485,8 @@ export class Game {
   _briefing(type) {
     const seed = (Math.random() * 1e9) >>> 0;
     let def;
-    try { def = this.runtime.generate(type, seed); } catch (err) { console.error(err); def = this.runtime.generate(type, seed + 1); }
+    const opts = { mode: this.settings.get('squadMode') ? 'squad' : 'solo' };   // 7단계: 분대 모드 (기본) / 단독 모드
+    try { def = this.runtime.generate(type, seed, opts); } catch (err) { console.error(err); def = this.runtime.generate(type, seed + 1, opts); }
     this.pendingDef = def;
     this.paperMap.draw(this.runtime.map(), def.marks, def.briefing.title);
     this.screens.showBriefing(def, (canvas) => this.paperMap.drawTo(canvas));
@@ -493,7 +516,7 @@ export class Game {
     this.hud.setDeath(null);
     this.hud.setBlackout(0);
     this.hud.clearRadio();
-    this.paperMap.hideNow(); this.wristGear.hideNow(); this.refillView.hideNow();
+    this.paperMap.hideNow(); this.wristGear.hideNow(); this.refillView.hideNow(); this.orderWheel.hideNow();
     this.weaponAudio.setMuffle(0);
     this.audio.setMuffle?.(0);
     const R = this.runtime;
@@ -547,6 +570,14 @@ export class Game {
     this.nightFX.clear();
     this.atmosphere.setFlare(null);
     this.hud.thirstPulse = 0;
+    // 7단계: 지원 화력 그림·명령 휠·무전기
+    this.supportMeshes.clear();
+    this.orderWheel.hideNow();
+    const Q = this._squadUI;
+    Q.radioCarried = false; Q.mapMenu = null; Q.ctx = null; Q.signal = null; Q.craters = 0; Q.treatAlly = null;
+    if (Q.heli && this.missionAudio.heli === Q.heli) this.missionAudio.heliStop(0.5);
+    Q.heli = null;
+    this.controller.wheelOpen = false;
     this.teleport(x, z, yaw);
   }
 
@@ -557,7 +588,7 @@ export class Game {
       x: m.position.x, z: m.position.z, yaw: this.controller.yaw, stance: m.stance, stamina: m.stamina,
       weaponKey: Object.keys(CONFIG.weapons).find((k) => CONFIG.weapons[k] === sh.weapon.data), weapon: sh.weapon.snapshot(),
       loose: this.pouch.loose, looseInitial: this.pouch.initial, loaded: this.pouch.loaded, injuries: this.injuries.snapshot(),
-      endurance: this.endurance.snapshot(),
+      endurance: this.endurance.snapshot(), radio: this._squadUI.radioCarried,
     };
   }
 
@@ -573,7 +604,16 @@ export class Game {
     if (P.stance !== 'stand') this.motor.forceStance(P.stance, 0.1);
     this.motor.stamina = P.stamina;
     if (P.endurance) this.endurance.restore(P.endurance);
+    this._squadUI.radioCarried = !!P.radio;
   }
+
+  /** 7단계: 체크포인트 뒤 분대가 다시 생겼을 때 (MissionRuntime.start) — 무전기를 메고 있었으면 무전병 손에는 없음 */
+  onSquadSpawned() {
+    if (this._squadUI.radioCarried) for (const a of this.enemies.friends) a.hasRadio = false;
+  }
+
+  /** 7단계: 오인 사격 (MissionRuntime 이 집계 — 화면에는 알리지 않음, 분대원이 외침) */
+  onFriendlyFire() { /* 결과 화면에서만 */ }
 
   /** 디버그 모드를 끄면 디버그 화면·메뉴를 닫음 */
   _debugOff() {
@@ -700,6 +740,19 @@ export class Game {
         return;
       }
     }
+    // 7단계 디버그: O 분대 다시 생성 · I 지원 화력·보급 횟수 초기화 · P 탄창·낱발 처음 상태로
+    if (!this.paused && e.code === K.allyRespawn) { this._debugRespawnSquad(); return; }
+    if (!this.paused && e.code === K.supportReset) {
+      this.support.resetCounts();
+      this.hud.toast(`지원 횟수 초기화 — 박격포 ${this.support.left.mortar} · 포병 ${this.support.left.artillery} · 조명탄 ${this.support.left.illum} · 보급 ${this.support.left.resupply}`, 2.2);
+      return;
+    }
+    if (!this.paused && e.code === K.ammoRefill) {
+      this.shooter.weapon.reset();
+      this.pouch.reset(CONFIG.ammo.loose);
+      this.hud.toast(`탄약 처음 상태로 — 탄창 ${this.shooter.weapon.mags.length}개 가득 · 낱발 ${this.pouch.loose}발`, 2);
+      return;
+    }
     if (!this.paused && e.code === K.incapacitate) {
       // F6: 대퇴 부상 (왼쪽, 동맥 아님) — 1단계 '거동 불능' 시험 키를 실제 부상으로
       if (this.testHit('thighL', { forceArterial: false })) this.hud.toast('F6 — 왼 대퇴 부상 (테스트)');
@@ -711,7 +764,7 @@ export class Game {
       const on = this.targetRange.toggle(this.camera.position, this.controller.yaw);
       this.hud.toast(on ? `표적 ${this.targetRange.targets.length}개 배치 (F8로 제거)` : '표적 제거');
     }
-    if (this.debug.visible && /^Digit[1-9]$/.test(e.code) && !this.paused) {
+    if (this.debug.visible && /^Digit[1-9]$/.test(e.code) && !this.paused && !this._squadUI.mapMenu) {
       const tp = this.data.testPoints.find((p) => p.key === e.code.slice(5));
       if (tp) { this.teleport(tp.x, tp.z, tp.yaw); this.hud.toast(tp.name); }
     }
@@ -748,6 +801,7 @@ export class Game {
       return;
     }
     const dt = Math.min(0.1, this.timer.getDelta());
+    this._lastDt = dt;
     const m = this.motor;
     // 4단계 HRTF 듣는 사람 = 카메라 (지난 프레임 끝 위치 — 이번 프레임에 나는 소리들의 기준)
     const L = this._listener, cp = this.camera.position;
@@ -763,6 +817,7 @@ export class Game {
     this.controller.locked = inj.dead || inj.stunned;
     // 5단계: 지도·나침반·탄창 채우기·줍기 → 손이 바쁨 (사격·조준 불가, 지도·나침반은 느린 걸음만) — 컨트롤러보다 먼저
     this._updateHands(dt);
+    this._updateOrders(dt);
     this.controller.update(dt);
     m.update(dt);
     inj.update(dt, { speed: Math.hypot(m.velocity.x, m.velocity.z) });
@@ -783,6 +838,8 @@ export class Game {
     const t0 = performance.now();
     this.enemies.update(dt);
     this._aiMs += (performance.now() - t0 - this._aiMs) * 0.1;
+    // 7단계: 지원 화력·보급 (무전 응답·날아오는 탄·헬기)
+    if (this.mode === 'play') this._updateSupport(dt);
     // 5단계: 임무 (시계·날씨 → 대기 목표, 디렉터, 목표·회수·제한 시간, 발자국, 소품)
     if (this.mode === 'play') this.runtime.update(dt);
     const sup = this._updateShooter(dt);
@@ -811,6 +868,7 @@ export class Game {
     this.combatFX.update(dt, this.camera, {});
     this.targetMeshes.update(dt);
     this.soldierMeshes.update(this.enemies.soldiers, this.enemies.pits);
+    this.supportMeshes.update(dt);
     this._pushPlantsBySoldiers();
     // 총구 화염 빛: 월드에 점광원을 더하지 않고 반구광을 잠깐 밝힘 (Atmosphere 가 매 프레임 값을 다시 정하므로 누적되지 않음)
     const flash = this.combatFX.flash;
@@ -844,6 +902,9 @@ export class Game {
       const daylight = Math.min(1, a.state.sunIntensity / 4.2 * 0.7 + a.state.hemiIntensity / 1.25 * 0.3);
       this.exposure = computeExposure(m, this.query, { daylight, sunOffset: off, ambient: this.light.ambient, extra: this.light.extra });
       m.exposure = this.exposure.value;
+      // 7단계: 병사(아군·적)를 표적으로 볼 때의 노출도도 같은 빛으로
+      const env = this.enemies.env;
+      env.daylight = daylight; env.sunOffset = off;
     }
 
     // UI
@@ -912,7 +973,8 @@ export class Game {
     if (k.viewKickYaw || k.viewKickPitch) c.addLook(k.viewKickYaw, k.viewKickPitch);
     if (k.staminaCost) m.stamina = Math.max(0, m.stamina - k.staminaCost);
     sh.weapon.updateFouling(dt, { stance: m.stance, surface: m.surface, moving: m.speed > 0.1, waterDepth: m.ground.waterDepth });
-    m.loadKg = CONFIG.load.baseKg + sh.weapon.weightKg + this.pouch.weightKg + this.endurance.kg;   // 탄을 쓰면 가벼워짐 (5단계: 낱발 주머니 · 6단계: 수통 물)
+    m.loadKg = CONFIG.load.baseKg + sh.weapon.weightKg + this.pouch.weightKg + this.endurance.kg   // 탄을 쓰면 가벼워짐 (5단계: 낱발 주머니 · 6단계: 수통 물)
+      + (this._squadUI.radioCarried ? CONFIG.allies.radioKg : 0);                                   // 7단계: 무전기를 멤
     m.stress = Math.max(sup.heartStress, this.injuries.effects().heartStress);   // 겁(제압)과 통증·출혈 중 큰 쪽
     return sup;
   }
@@ -1112,7 +1174,13 @@ export class Game {
     });
     // 고함 (분대 의사소통·비명·도움 요청) — 목소리 높이는 병사마다
     em.on('shout', (e) => {
-      const s = e.soldier, a = spatial(e.position);
+      const s = e.soldier;
+      // 7단계 분대원: 말은 'say' (자막 + 말 같은 목소리), 아파서 지르는 비명만 그대로, 재장전·도움은 짧은 말로
+      if (s.faction === 'friend') {
+        if (e.said) return;
+        if (e.kind !== 'scream') { if (ALLY_SHOUT[e.kind]) this._onSay({ soldier: s, text: ALLY_SHOUT[e.kind], kind: e.kind }); return; }
+      }
+      const a = spatial(e.position);
       const weak = s.alive ? Math.max(0.45, Math.min(1, s.injuries.blood / 80)) : 0.5;
       ia.shout(e.kind, { distance: a.distance, pan: a.pan, behind: a.behind, pos: at(e.position), voice: this._voiceOf(s), weak });
     });
@@ -1231,7 +1299,7 @@ export class Game {
       hud.toast('발밑이 꺼졌다 — 꼬챙이 구덩이!', 2.5);
     });
     T.on('known', (e) => {
-      if (e.how === 'trigger') return;
+      if (e.how === 'trigger' || e.how === 'ally') return;   // 7단계: 첨병이 찾은 함정은 '정지! 철선!' 외침으로
       const txt = (KNOWN_TEXT[e.how] ?? KNOWN_TEXT.sight)[e.trap.kind];
       if (txt) hud.toast(txt, 3.2);
       if (e.how === 'probe') fa.probeHit(e.trap.kind);
@@ -1279,7 +1347,12 @@ export class Game {
     L.scene = Math.min(1, L.ambient + L.flare + (this._field.lamp ? 0.3 * L.night : 0));
     this.enemies.night = L.night;
     this.enemies.moon = L.moon;
+    this.enemies.dayLight = L.day;
     this.noise.nightMask = L.nightAmb;
+    // 7단계: 분대원 피로·갈증·첨병 함정 발견 환경 (1초에 한 번)
+    const FE = this.enemies.fieldEnv;
+    FE._t = (FE._t ?? 0) - (this._lastDt ?? 0.016);
+    if (FE._t <= 0) { FE._t = 1; FE.heat = this._heat(); FE.rain = this.atmosphere.rainIntensity; FE.night = L.night; FE.wetness = this.atmosphere.wetFactor; }
   }
 
   /** 땅 한 점의 빛 (함정 발견): 그 자리 빛 수준 · 조명탄 · 내 손전등 */
@@ -1486,8 +1559,9 @@ export class Game {
     this._setViewLight(L.view);
     // 손 동작 화면
     const E = this.endurance;
-    const mode = E.action?.kind ?? (F.probe ? 'probe' : F.disarm ? 'disarm' : null);
-    const prog = E.action ? E.progress : F.probe ? F.probe.t / CONFIG.traps.probe.time : F.disarm ? F.disarm.t / CONFIG.traps.disarm.time : 0;
+    const sig = this._squadUI.signal;
+    const mode = sig ? 'signal' : E.action?.kind ?? (F.probe ? 'probe' : F.disarm ? 'disarm' : null);
+    const prog = sig ? sig.t / sig.dur : E.action ? E.progress : F.probe ? F.probe.t / CONFIG.traps.probe.time : F.disarm ? F.disarm.t / CONFIG.traps.disarm.time : 0;
     this.fieldHands.update(dt, mode, prog);
     // 갈증 맥박 시야
     this.hud.thirstPulse = E.effects(this._endFx || (this._endFx = {})).pulse;
@@ -1625,7 +1699,7 @@ export class Game {
       if (!change(code === 'ArrowLeft' ? -1 : 1)) return true;
     } else if (code === 'Enter') {
       if (S.index === 4) this._doSpawn();
-      else if (S.index === 5) { this.enemies.clear(); this.soldierMeshes.clear(); this.aiDebug.clear(); this.hud.toast('적 모두 제거'); }
+      else if (S.index === 5) { this.enemies.clearEnemies(); this.hud.toast('적 모두 제거 (분대는 남김)'); }
       else change(1);
     } else return false;
     this._showSpawnMenu();
@@ -1647,6 +1721,321 @@ export class Game {
     const mg = sq.members.some((x) => x.weaponData.bipod);
     const where = kind === 'patrol' ? `${d}m 밖에서 이쪽으로 순찰` : `앞쪽 오솔길 약 ${d}m 에 매복`;
     this.hud.toast(`${SPAWN_KINDS[S.kind].label.split(' ')[0]} ${n}명${mg ? ' (경기관총)' : ''} — ${where}${n < S.size ? ` · 최대 ${CONFIG.ai.maxActive}명이라 ${n}명만` : ''}`, 3);
+  }
+
+  // =================================================================
+  // 7단계: 분대 (말·명령 휠·탄약)·무전 지원 화력·보급
+  // =================================================================
+  _wireSquad() {
+    const em = this.enemies, S = this.support, hud = this.hud, fa = this.fieldAudio;
+    const sp = {};
+    const spatial = (p) => WeaponAudio.spatial(this.camera.position, this.controller.yaw, p, sp);
+    em.on('say', (e) => this._onSay(e));
+    // 탄창 던지기: 손에서 내 가슴까지 날아옴 (그림) → 도착하면 받음
+    em.on('ammoThrow', (e) => {
+      const p = e.from.motor.position;
+      const cam = this.camera.position;
+      this.supportMeshes.throwMag({ x: p.x, y: p.y + 1.4, z: p.z }, () => ({ x: cam.x, y: cam.y - 0.45, z: cam.z }), e.flight);
+    });
+    em.on('ammoArrive', (e) => this._receiveMag(e));
+    // 의무병이 나를 처치
+    em.on('treat', (e) => {
+      if (e.patient !== em.player) return;
+      if (e.phase === 'start') {
+        this.injuryAudio.aidStart(e.kind);
+        hud.toast(`의무병 ${e.medic.name}${iGa(e.medic.name)} ${AID_LABEL[e.kind]}를 감는다 — 움직이지 마라 (${e.duration.toFixed(1)}초)`, Math.min(4, e.duration));
+      } else if (e.phase === 'done') {
+        this.injuryAudio.aidEnd(e.kind);
+        hud.toast(`의무병이 ${e.wound?.label ?? '상처'}에 ${AID_LABEL[e.kind]}를 감았다`, 2.2);
+      }
+    });
+    // 지원 화력: 날아오는 소리 → 탄착 (폭발·공중 폭발·조명탄) · 적 박격포 발사음 · 헬기 · 상자
+    S.on('incoming', (e) => {
+      const p = e.shell.point;
+      const gy = this.query.getTerrainHeight(p.x, p.z);
+      const pos = { x: p.x, y: gy + 30, z: p.z };
+      fa.incoming({ kind: e.shell.kind === 'artillery' ? 'artillery' : 'mortar', distance: spatial(pos).distance, pos, eta: e.eta });
+    });
+    S.on('impact', (e) => this._onShellImpact(e));
+    S.on('enemyLaunch', (e) => {
+      const p = e.from;
+      const pos = { x: p.x, y: this.query.getTerrainHeight(p.x, p.z) + 1, z: p.z };
+      fa.mortarLaunch({ distance: spatial(pos).distance, pos });
+    });
+    S.on('heli', (e) => {
+      const Q = this._squadUI;
+      if (e.state === 'approach' && !this.missionAudio.heli) { this.missionAudio.heliStart(38); Q.heli = this.missionAudio.heli; Q.heliStopAt = this.enemies.time + 38 + 30; }
+    });
+    S.on('drop', (e) => this.supportMeshes.addCrate(e.crate, 14));
+    S.on('dangerClose', () => hud.toast('위험 근접 경고 — 지도(M)에서 다시 확인해야 쏜다', 3.5));
+    this.supportMeshes.onLand = (crate) => {
+      const pos = { x: crate.x, y: crate.y + 0.3, z: crate.z };
+      fa.crateThud({ distance: spatial(pos).distance, pos });
+    };
+  }
+
+  /** 분대원·내 말: 들리는 거리 안이면 자막 (이름) + 말 같은 합성 목소리 */
+  _onSay(e) {
+    if (e.player) {
+      this.hud.chatter('나', e.text, { me: true });
+      this.injuryAudio.speak(e.text, { own: true, voice: PLAYER_VOICE });
+      return;
+    }
+    const s = e.soldier;
+    if (!s) return;
+    const p = s.motor.position, pos = { x: p.x, y: p.y + 1.5, z: p.z };
+    const a = WeaponAudio.spatial(this.camera.position, this.controller.yaw, pos, this._saySp || (this._saySp = {}));
+    const range = e.quiet ? 10 : CONFIG.ai.hearing.shoutRadius * 1.6;
+    if (a.distance > range || this.injuries.dead) return;
+    this.hud.chatter(s.name, e.text, { far: a.distance > 35 });
+    const weak = s.alive ? Math.max(0.5, Math.min(1, s.injuries.blood / 80)) : 0.5;
+    this.injuryAudio.speak(e.text, { distance: a.distance, pan: a.pan, behind: a.behind, pos, voice: this._voiceOf(s), weak, loud: e.quiet ? 'quiet' : e.kind === 'ack' ? 'call' : 'shout' });
+  }
+
+  /** 던진 탄창을 받음: 내 소총이면 탄창째, 다른 총을 들고 있으면 낱발로 */
+  _receiveMag(e) {
+    if (this.injuries.dead || this.mode !== 'play') return;
+    const w = this.shooter.weapon;
+    if (w.data === CONFIG.weapons.rifle762) { w.mags.push({ rounds: e.rounds }); this.hud.toast(`${e.from.name}에게서 탄창을 받았다`, 1.8); }
+    else { this.pouch.loose += e.rounds; this.hud.toast(`탄창을 받았다 — 이 총엔 맞지 않아 낱발로 챙겼다`, 2); }
+    this.fieldAudio.magCatch();
+    this.runtime?.noteSupply('ammoThrown');
+  }
+
+  /** 위험 근접 판정용 아군 실제 위치 (플레이어 + 살아 있는 분대원) */
+  _friendlyPositions() {
+    const out = this._fpos || (this._fpos = []);
+    out.length = 0;
+    if (!this.injuries.dead) out.push(this.motor.position);
+    for (const a of this.enemies.friends) if (a.alive) out.push(a.motor.position);
+    return out;
+  }
+
+  /** 포탄 탄착: 폭발·공중 폭발 효과·소리·흔들림·이명, 크레이터 */
+  _onShellImpact(e) {
+    if (e.illum) return;   // 조명탄은 Flares 가 (터지는 소리는 'ignite')
+    const p = e.point, kind = e.shell.kind;
+    const sp = this._shellSp || (this._shellSp = {});
+    const a = WeaponAudio.spatial(this.camera.position, this.controller.yaw, p, sp), d = a.distance;
+    const scale = kind === 'artillery' ? 2.2 : 1.5;
+    this.combatFX.explosion({ point: p, scale, air: e.airburst });
+    this.fieldAudio.explosion({ distance: d, pos: { x: p.x, y: p.y + 0.5, z: p.z }, pan: a.pan, behind: a.behind, scale });
+    const B = CONFIG.traps.blast;
+    this._boomNear = Math.max(0, 1 - d / (60 * scale));
+    const shakeR = B.shakeRadius * scale, tinR = B.tinnitusRadius * scale;
+    if (d < shakeR) {
+      const k = 1 - d / shakeR;
+      this.rig.addShake(6 * k);
+      this.rig.dipVel -= 1.6 * k;
+      this.shooter.aim.addShake(4 * k);
+    }
+    if (d < tinR && !this.injuries.dead) {
+      const tt = CONFIG.injury.player.tinnitus * 1.6 * Math.min(1.5, scale / 1.5);
+      this.injuryAudio.tinnitus(tt, 1);
+      this._inj.tinnitus = tt;
+    }
+    if (d < 70 * scale) this.adapt.flash(0.4 + 0.6 * (1 - d / (70 * scale)));
+    this.audio.duck(0.65, 2.8);
+    if (this.support.craters.length !== this._squadUI.craters) { this._squadUI.craters = this.support.craters.length; this.supportMeshes.syncCraters(this.support.craters); }
+  }
+
+  /** 매 프레임: 지원 화력 갱신 · 헬기 소리 끝내기 */
+  _updateSupport(dt) {
+    this.support.update(dt);
+    const Q = this._squadUI;
+    if (Q.heli && this.enemies.time > Q.heliStopAt) {
+      if (this.missionAudio.heli === Q.heli) this.missionAudio.heliStop(8);
+      Q.heli = null;
+    }
+  }
+
+  /** 무전을 쓸 수 있나: 무전기를 멨거나, 무전병이 살아 있고 의식이 있으며 radioRange m 안 */
+  _radioAvailable() {
+    const sq = this.enemies.friendSquad;
+    if (!this.runtime?.squadMode || !sq) return { ok: false, reason: '무전기가 없다 — 단독 임무' };
+    const r = sq.radioAccess(this.motor.position, this._squadUI.radioCarried);
+    if (r.ok) return r;
+    const n = r.ro?.name ?? '';
+    const msg = { none: '무전기가 없다', down: `무전병 ${n}${iGa(n)} 쓰러졌다 — 무전기를 가져와야 한다 (F)`, far: `무전병 ${n}${iGa(n)} 곁에 없다 — 가까이 불러야 한다` }[r.reason];
+    return { ok: false, reason: msg ?? '무전을 쓸 수 없다' };
+  }
+
+  /** 지도 격자 좌표 (100m 칸 — 지도에 적힌 동향·북향 두 자리씩) */
+  _gridRef(p) {
+    const md = this.runtime?.map?.() ?? null;
+    const size = md?.size ?? 1000, half = md?.half ?? size / 2, grid = md?.grid ?? 100;
+    const n = Math.round(size / grid);
+    const e = Math.max(0, Math.min(n - 1, Math.floor((p.x + half) / grid)));
+    const no = Math.max(0, Math.min(n - 1, n - 1 - Math.floor((p.z + half) / grid)));
+    return `${String(e).padStart(2, '0')}${String(no).padStart(2, '0')}`;
+  }
+
+  /** J 명령 휠 · 지도 연필 (지원 요청) — 컨트롤러보다 먼저 (마우스 이동량을 휠·연필이 가져감) */
+  _updateOrders(dt) {
+    const K = CONFIG.controls, inp = this.input, W = this.orderWheel, Q = this._squadUI;
+    const sq = this.enemies.friendSquad;
+    const alive = this.mode === 'play' && !this.injuries.dead && !this.controller.locked;
+    if (Q.signal) { Q.signal.t += dt; if (Q.signal.t >= Q.signal.dur || !alive) Q.signal = null; }
+    // 명령 휠 (분대 모드)
+    const want = alive && inp.isDown(K.orders) && !this._hands.gear;
+    if (want && inp.pressed(K.orders) && (!this.runtime?.squadMode || !sq)) this.hud.toast('단독 임무 — 명령을 받을 분대가 없다', 1.6);
+    if (!inp.isDown(K.orders)) Q.wheelDone = false;   // 명령을 내리면 휠이 닫힘 — 다시 누르면 열림
+    const held = want && !!this.runtime?.squadMode && !!sq && !Q.wheelDone;
+    if (held && !W.open) { W.show(); Q.ctx = this._orderContext(); } else if (!held && W.open) W.hide();
+    let took = false;
+    if (W.open) {
+      const d = inp.consumeMouse();
+      took = true;
+      if (inp.dragLook) W.move(null, { x: inp.clientX - window.innerWidth / 2, y: inp.clientY - window.innerHeight / 2 });
+      else W.move({ dx: d.dx, dy: d.dy });
+      const key = W.selected;
+      const method = key && inp.pressed('Mouse0') ? 'signal' : key && inp.pressed('Mouse2') ? 'shout' : null;
+      if (method && this._issueOrder(key, method)) { Q.wheelDone = true; W.hide(); }
+      W.update(dt);
+    }
+    // 지도 연필 (분대 모드 — 지도를 다 펼쳤을 때): 마우스로 지점 → 좌클릭 요청 메뉴
+    const mapUp = alive && this.paperMap.state === 'up' && !!this.runtime?.squadMode;
+    if (mapUp) {
+      this.paperMap.cursorOn();
+      const d = took ? { dx: 0, dy: 0 } : inp.consumeMouse();
+      if (Q.mapMenu) this._mapMenuInput(d);
+      else {
+        if (inp.dragLook) this.paperMap.moveCursor(null, { x: inp.clientX, y: inp.clientY });
+        else this.paperMap.moveCursor(d);
+        if (inp.pressed('Mouse0')) this._openMapMenu();
+      }
+    } else if (this.paperMap.cursor || Q.mapMenu) {
+      this.paperMap.cursorOff();
+      Q.mapMenu = null;
+      this.paperMap.setMenu(null);
+    }
+    this.controller.wheelOpen = W.open || mapUp;
+  }
+
+  /** 휠을 열 때 보던 곳 (저기로 이동·제압 사격 지점, 후퇴 방향) */
+  _orderContext() {
+    const cam = this.camera.position;
+    const f = this._fwd || (this._fwd = new THREE.Vector3());
+    this.camera.getWorldDirection(f);
+    const r = this.query.raycastWorld({ x: cam.x, y: cam.y, z: cam.z }, { x: f.x, y: f.y, z: f.z }, 200, 'bullet');
+    let point;
+    if (r.hit && r.distance > 1.5) point = { x: cam.x + f.x * r.distance, y: cam.y + f.y * r.distance, z: cam.z + f.z * r.distance };
+    else {
+      const L = r.hit ? 6 : 60;
+      point = { x: cam.x + f.x * L, y: 0, z: cam.z + f.z * L };
+      point.y = this.query.getSupportHeight(point.x, point.z);
+    }
+    const hl = Math.hypot(f.x, f.z) || 1;
+    return { point, dir: { x: f.x / hl, z: f.z / hl } };
+  }
+
+  /** 명령 내리기: 수신호 (손이 비어야 — 팔 동작 1.2초) / 외치기 */
+  _issueOrder(key, method) {
+    const sq = this.enemies.friendSquad, Q = this._squadUI;
+    if (!sq) return false;
+    if (method === 'signal') {
+      if (this.injuries.aid || this.pouch.refilling || this.endurance.busy || this._hands.interact || this._field.probe || this._field.disarm || Q.signal) {
+        this.hud.toast('손이 바쁘다 — 수신호를 할 수 없다', 1.4);
+        return false;
+      }
+      Q.signal = { key, t: 0, dur: CONFIG.allies.signal.hold };
+      this.fieldHands.signal(key);
+    }
+    const cam = this.camera.position, L = this.light;
+    sq.issue(key, method, { ...Q.ctx, light: Math.max(L.ambient, L.flare), eye: { x: cam.x, y: cam.y + 0.15, z: cam.z } });
+    if (method === 'signal') this.hud.toast(`수신호: ${ORDER_LABELS[key]}`, 1.2);
+    return true;
+  }
+
+  // ---- 지도 지원 요청 메뉴 ------------------------------------------------
+  _openMapMenu() {
+    const r = this._radioAvailable();
+    if (!r.ok) { this.hud.toast(r.reason, 2.4); return; }
+    const p = this.paperMap.cursorWorld();
+    if (!p) return;
+    this._squadUI.mapMenu = { point: p, index: 0, acc: 0, grid: this._gridRef(p) };
+  }
+
+  _supportItems() {
+    const S = this.support, L = SUPPORT_LABELS, left = S.left, items = [];
+    const pc = S.pendingConfirm, pa = S.pendingAdjust;
+    if (pc) items.push({ label: `위험 근접 확인 — ${L[pc.kind]} 그대로 사격하라`, act: 'confirm', mission: pc });
+    if (pa) items.push({ label: `${L[pa.kind]} 수정 — 이 지점으로 효력 사격`, act: 'adjust', mission: pa });
+    items.push({ label: `박격포 — 시험 사격부터 (남은 ${left.mortar})`, act: 'req', kind: 'mortar', mode: 'adjust', off: left.mortar <= 0 });
+    items.push({ label: '박격포 — 바로 효력 사격', act: 'req', kind: 'mortar', mode: 'ffe', off: left.mortar <= 0 });
+    items.push({ label: `포병 — 시험 사격부터 (남은 ${left.artillery})`, act: 'req', kind: 'artillery', mode: 'adjust', off: left.artillery <= 0 });
+    items.push({ label: '포병 — 바로 효력 사격', act: 'req', kind: 'artillery', mode: 'ffe', off: left.artillery <= 0 });
+    items.push({ label: `조명탄 3발 (밤 — 남은 ${left.illum})`, act: 'req', kind: 'illum', off: left.illum <= 0 || this.light.night < 0.35 });
+    items.push({ label: `헬기 보급 (트인 곳 — 남은 ${left.resupply})`, act: 'req', kind: 'resupply', off: left.resupply <= 0 });
+    if (pc) items.push({ label: '위험 근접 — 사격 취소', act: 'cancel', mission: pc });
+    items.push({ label: '닫기', act: 'close' });
+    return items;
+  }
+
+  /** 메뉴가 열려 있을 때: 마우스 위아래로 고르기 · 좌클릭 실행 · 우클릭 닫기 · 숫자키 바로 실행 */
+  _mapMenuInput(d) {
+    const inp = this.input, M = this._squadUI.mapMenu;
+    const items = this._supportItems();
+    if (inp.pressed('Mouse2')) { this._closeMapMenu(); return; }
+    for (let k = 1; k <= Math.min(9, items.length); k++) {
+      if (inp.pressed(`Digit${k}`)) { M.index = k - 1; this._doSupport(items[k - 1], M); return; }
+    }
+    if (inp.dragLook) {
+      const els = this.paperMap.menuItems.children;
+      for (let i = 0; i < els.length; i++) {
+        const r = els[i].getBoundingClientRect();
+        if (inp.clientY >= r.top && inp.clientY <= r.bottom && inp.clientX >= r.left - 20 && inp.clientX <= r.right + 20) M.index = i;
+      }
+    } else {
+      M.acc += d.dy;
+      while (M.acc > 34) { M.acc -= 34; M.index = Math.min(items.length - 1, M.index + 1); }
+      while (M.acc < -34) { M.acc += 34; M.index = Math.max(0, M.index - 1); }
+    }
+    M.index = Math.max(0, Math.min(items.length - 1, M.index));
+    if (inp.pressed('Mouse0')) { this._doSupport(items[M.index], M); return; }
+    this.paperMap.setMenu(`지원 요청 — 좌표 ${M.grid} (마우스 위아래 · 좌클릭 · 우클릭 닫기 · 숫자키)`, items, M.index);
+  }
+
+  _closeMapMenu() { this._squadUI.mapMenu = null; this.paperMap.setMenu(null); }
+
+  /** 요청 실행: 무전 (내 말 자막 + 무전 잡음) → FireSupport */
+  _doSupport(item, M) {
+    const S = this.support, L = SUPPORT_LABELS, p = M.point, PM = this.paperMap;
+    if (!item || item.act === 'close') { this._closeMapMenu(); return; }
+    if (item.off) {
+      this.hud.toast(item.kind === 'illum' && S.left.illum > 0 ? SUPPORT_REFUSED.day : SUPPORT_REFUSED.none, 1.8);
+      return;
+    }
+    const r = this._radioAvailable();
+    if (!r.ok) { this.hud.toast(r.reason, 2.4); this._closeMapMenu(); return; }
+    const say = (text) => { this.hud.chatter('나 (무전)', text, { me: true }); this.missionAudio.radio(Math.min(2.2, 0.8 + text.length * 0.02), 'progress'); };
+    if (item.act === 'confirm') {
+      if (S.confirm(item.mission)) say(`위험 근접 확인한다. ${L[item.mission.kind]} 그대로 사격하라.`);
+    } else if (item.act === 'cancel') {
+      S.cancel(item.mission);
+      say('사격 취소. 반복한다, 사격 취소.');
+    } else if (item.act === 'adjust') {
+      const res = S.adjust(item.mission, p);
+      if (res.ok) { PM.addMark(p.x, p.z, '수정'); say(`수정 — 좌표 ${M.grid}. 효력 사격 요청.`); }
+    } else {
+      const res = S.request(item.kind, p, { mode: item.mode, night: this.light.night });
+      if (!res.ok) { this.hud.toast(SUPPORT_REFUSED[res.reason] ?? SUPPORT_REFUSED.kind, 2.2); return; }
+      const label = { mortar: '박격포', artillery: '포병', illum: '조명', resupply: '보급' }[item.kind];
+      PM.addMark(p.x, p.z, label);
+      const what = item.kind === 'resupply' ? '보급 헬기 요청' : item.kind === 'illum' ? '조명탄 요청' : `${L[item.kind]} 화력 요청${item.mode === 'ffe' ? ', 바로 효력 사격' : ', 시험 사격부터'}`;
+      say(`${what} — 좌표 ${M.grid}.`);
+    }
+    this._closeMapMenu();
+  }
+
+  /** 디버그 O: 분대 다시 생성 (임무 명단 그대로, 내 뒤에) */
+  _debugRespawnSquad() {
+    const R = this.runtime;
+    if (!R?.active || !R.squadMode || !R.def?.squad) { this.hud.toast('분대 모드 임무에서만 — 단독 모드', 1.8); return; }
+    this.enemies.clearFriends();
+    FriendSquad.spawn(this.enemies, R.def.squad, { seed: R.def.seed, at: this.motor.position, yaw: this.motor.yaw });
+    this._squadUI.radioCarried = false;
+    this.hud.toast(`분대 다시 생성 — ${R.def.squad.map((r) => r.name).join(' · ')}`, 2.4);
   }
 
   // =================================================================
@@ -1775,7 +2164,7 @@ export class Game {
     const compBusy = this.wristGear.update(dt, compHeld, heading, this.runtime?.clock?.hours ?? 12, T);
     H.gear = mapBusy || compBusy;
     const F = this._field;
-    H.busy = H.gear || this.pouch.refilling || !!H.interact || this.endurance.busy || !!F.probe || !!F.disarm;
+    H.busy = H.gear || this.pouch.refilling || !!H.interact || this.endurance.busy || !!F.probe || !!F.disarm || !!this._squadUI.signal;
     this.controller.handsBusy = H.busy;
     if (H.gear !== H.restricted) {
       H.restricted = H.gear;
@@ -1824,7 +2213,10 @@ export class Game {
     if (c.pouchCheck && !inj.dead) this.hud.toast(`탄약 주머니: ${this.pouch.label}`, 1.6);
   }
 
-  /** F: 부상으로 떨어뜨린 내 총 → 야영지 문서 (3초) → 가장 가까운 쓰러진 적의 소총 · 땅에 둔 총 (2초) */
+  /**
+   * F: 부상으로 떨어뜨린 내 총 → 인계철선 해제 → 개울 수통 → 7단계 (보급 상자 · 아군 치료 · 무전기 · 쓰러진 아군 물자)
+   *    → 야영지 문서 (3초) → 가장 가까운 쓰러진 적의 소총 · 땅에 둔 총 (2초)
+   */
   _startInteract() {
     const inj = this.injuries, H = this._hands;
     if (inj.dead || inj.stunned || inj.aid || H.interact || this._inj.pickup) return;
@@ -1851,6 +2243,16 @@ export class Game {
       this.endurance.startRefill(true);
       return;
     }
+    // 7단계: 보급 상자 열기 (3초)
+    const crate = this.support.crates.find((c) => !c.opened && Math.hypot(c.x - m.x, c.z - m.z) < 1.9);
+    if (crate) {
+      const t = CONFIG.supply.crate.openTime;
+      H.interact = { kind: 'crate', crate, t: 0, dur: t, hits: inj.wounds.length };
+      this.hud.toast('보급 상자를 연다…', t);
+      return;
+    }
+    // 7단계: 아군 — 치료 (내 붕대·지혈대, 내 처치 시간) · 무전기 줍기 · 쓰러진 아군의 탄창·낱발·붕대
+    if (this._startAllyInteract(m)) return;
     const docs = R.def.camp && R.props.docs?.visible ? R.def.camp.docs : null;
     if (docs && Math.hypot(docs.x - m.x, docs.z - m.z) < 1.9 && !R.mission.objectives.find((o) => o.kind === 'documents')?.done) {
       const t = CONFIG.mission.raid.docTime;
@@ -1860,7 +2262,7 @@ export class Game {
     }
     let best = null, bd = A.pickupRange;
     for (const s of this.enemies.soldiers) {
-      if (s.alive || s.weaponTaken || !s.weaponData?.pickup) continue;
+      if (s.alive || s.weaponTaken || !s.weaponData?.pickup || s.faction === 'friend') continue;
       const d = Math.hypot(s.motor.position.x - m.x, s.motor.position.z - m.z);
       if (d < bd) { bd = d; best = { kind: 'enemyRifle', soldier: s }; }
     }
@@ -1873,7 +2275,7 @@ export class Game {
       this.hud.toast(best.kind === 'enemyRifle' ? '쓰러진 적의 총을 집는다…' : '총을 집는다…', A.pickupTime);
     } else {
       // 쓰러진 적이 가까이 있는데 줍지 못하는 이유 (경기관총 등)
-      const near = this.enemies.soldiers.find((s) => !s.alive && !s.weaponTaken && Math.hypot(s.motor.position.x - m.x, s.motor.position.z - m.z) < A.pickupRange);
+      const near = this.enemies.soldiers.find((s) => !s.alive && !s.weaponTaken && s.faction !== 'friend' && Math.hypot(s.motor.position.x - m.x, s.motor.position.z - m.z) < A.pickupRange);
       if (near) this.hud.toast(near.weaponData?.bipod ? '경기관총은 너무 무겁다' : '탄을 빼 쓸 수는 없다 — 총째로만 주울 수 있다', 1.8);
     }
   }
@@ -1882,17 +2284,54 @@ export class Game {
     const H = this._hands, it = H.interact;
     if (!it) return;
     const inj = this.injuries, m = this.motor;
-    if (inj.dead || this.mode !== 'play') { H.interact = null; return; }
+    if (inj.dead || this.mode !== 'play') { this._endInteract(); return; }
     if (Math.hypot(m.velocity.x, m.velocity.z) > CONFIG.injury.aid.moveCancelSpeed || inj.wounds.length !== it.hits || inj.stunned) {
-      H.interact = null;
+      this._endInteract();
       this.hud.toast('취소');
       return;
     }
+    // 7단계: 아군이 멀어짐 (끌려감·업혀 감) · 치료 중 숨짐
+    if (it.ally) {
+      const p = it.ally.motor.position;
+      if (Math.hypot(p.x - m.position.x, p.z - m.position.z) > CONFIG.allies.treatRange + 1.2 || (it.kind === 'treatAlly' && !it.ally.alive)) {
+        this._endInteract();
+        this.hud.toast(it.ally.alive ? '멀어져서 멈췄다' : `${it.ally.name}${iGa(it.ally.name)} 숨을 거뒀다`, 1.8);
+        return;
+      }
+    }
+    if (it.kind === 'treatAlly') this.injuryAudio.aidTick(it.aid, it.t / it.dur, dt);
     it.t += dt;
     if (it.t < it.dur) return;
-    H.interact = null;
+    this._endInteract(true);
     const R = this.runtime;
-    if (it.kind === 'docs') {
+    if (it.kind === 'treatAlly') {
+      const a = it.ally, w = it.wound;
+      if (a.alive && a.injuries.applyTreatment(it.aid, w)) {
+        if (it.aid === 'bandage') inj.bandages--; else inj.tourniquets--;
+        this.injuryAudio.aidEnd(it.aid);
+        const left = it.aid === 'bandage' ? inj.bandages : inj.tourniquets;
+        this.hud.toast(`${a.name}의 ${w.label ?? '상처'}에 ${AID_LABEL[it.aid]}를 감았다 (남은 ${AID_LABEL[it.aid]} ${left}개)`, 2.2);
+        a.say(a.injuries.blood < 60 ? '고맙다…' : '고맙다!', 'ack', { quiet: true, force: true });
+      } else this.hud.toast('처치할 상처가 없다', 1.4);
+    } else if (it.kind === 'radio') {
+      if (!this.enemies.friendSquad?.takeRadio(it.ally)) { this.hud.toast('무전기를 가져올 수 없다', 1.6); return; }
+      this._squadUI.radioCarried = true;
+      R.noteSupply('radioTaken');
+      this.weaponAudio.mech('magCheck');
+      this.hud.toast(`무전기를 멨다 (${CONFIG.allies.radioKg}kg — 무겁다) · 이제 어디서든 지원을 요청할 수 있다 (M)`, 3.2);
+    } else if (it.kind === 'loot') {
+      const got = this._allyLoot(it.ally);
+      R.noteSupply('looted');
+      this.weaponAudio.mech('magIn');
+      const parts = [];
+      if (got.mags) parts.push(`탄창 ${got.mags}개`);
+      if (got.loose) parts.push(`낱발 ${got.loose}발`);
+      if (got.band) parts.push(`붕대 ${got.band}개`);
+      if (got.tq) parts.push(`지혈대 ${got.tq}개`);
+      this.hud.toast(parts.length ? `${it.ally.name}의 ${parts.join(' · ')}를 챙겼다` : '챙길 것이 없다', 2.6);
+    } else if (it.kind === 'crate') {
+      this._openCrate(it.crate);
+    } else if (it.kind === 'docs') {
       R.props.takeDocs();
       R.mission.docsTaken();
       this.weaponAudio.mech('magCheck');
@@ -1908,6 +2347,95 @@ export class Game {
       this._swapWeapon(it.gw.data, it.gw.state);
       this.hud.toast(`${it.gw.data.label}을 들었다`, 2);
     }
+  }
+
+  /** 상호작용 끝 (취소·완료) — 아군 치료 표시 정리 */
+  _endInteract(done = false) {
+    const it = this._hands.interact;
+    this._hands.interact = null;
+    if (!it) return;
+    if (it.kind === 'treatAlly' && it.ally.beingTreated === 'player') it.ally.beingTreated = null;
+    if (!done && it.kind === 'treatAlly') this.injuryAudio.aidEnd?.(it.aid);
+  }
+
+  /** 7단계 F: 가까운 분대원 — 처치할 상처가 있으면 치료, 쓰러졌으면 무전기·물자 (했으면 true) */
+  _startAllyInteract(m) {
+    const inj = this.injuries, H = this._hands, A = CONFIG.allies;
+    let best = null, bd = A.treatRange + 0.4;
+    for (const a of this.enemies.friends) {
+      const p = a.motor.position;
+      const d = Math.hypot(p.x - m.x, p.z - m.z);
+      if (d < bd) { bd = d; best = a; }
+    }
+    if (!best) return false;
+    const a = best, hits = inj.wounds.length;
+    if (a.alive) {
+      const kind = a.injuries.treatmentKind(inj.tourniquets > 0);
+      if (kind) {
+        if (kind === 'bandage' && inj.bandages <= 0) { this.hud.toast('붕대가 없다', 1.6); return true; }
+        if (a.beingTreated && a.beingTreated !== 'player') { this.hud.toast(`의무병이 ${a.name}${iGa(a.name) === '이' ? '을' : '를'} 처치하고 있다`, 1.8); return true; }
+        const w = a.injuries.treatmentTarget(kind);
+        if (!w) return false;
+        const dur = kind === 'bandage' ? CONFIG.injury.aid.bandageTime : CONFIG.injury.aid.tourniquetTime;
+        H.interact = { kind: 'treatAlly', ally: a, aid: kind, wound: w, t: 0, dur, hits };
+        a.beingTreated = 'player';
+        this.injuryAudio.aidStart(kind);
+        this.hud.toast(`${a.name}에게 ${AID_LABEL[kind]}를 감는다 (${dur.toFixed(1)}초) — 움직이면 취소`, Math.min(4, dur));
+        return true;
+      }
+    }
+    if (!a.alive || a.unconscious) {
+      if (a.hasRadio && !this._squadUI.radioCarried) {
+        H.interact = { kind: 'radio', ally: a, t: 0, dur: 2, hits };
+        this.hud.toast(`${a.name}의 무전기를 벗겨 멘다…`, 2);
+        return true;
+      }
+      if (!a.looted && this._allyLoot(a, true)) {
+        H.interact = { kind: 'loot', ally: a, t: 0, dur: A.lootTime, hits };
+        this.hud.toast(`${a.name}의 탄창·낱발·붕대를 챙긴다…`, A.lootTime);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** 쓰러진 아군의 물자 (dry: 챙길 게 있나만) — 내 총과 같은 탄창은 탄창째, 아니면 (기관총 탄띠 등) 낱발로 */
+  _allyLoot(a, dry = false) {
+    const w = a.shooter.weapon, ai = a.injuries, mine = this.shooter.weapon;
+    const fits = w.data === mine.data && !w.data.bipod;
+    const got = { mags: 0, loose: 0, band: 0, tq: 0 };
+    const band = (ai.bandages ?? 0) + (a.medKit?.bandages ?? 0), tq = (ai.tourniquets ?? 0) + (a.medKit?.tourniquets ?? 0);
+    if (dry) return w.mags.some((x) => x.rounds > 0) || (a.loose ?? 0) > 0 || band > 0 || tq > 0;
+    for (const x of w.mags) {
+      if (x.rounds <= 0) continue;
+      if (fits) { mine.mags.push({ rounds: x.rounds }); got.mags++; } else { this.pouch.loose += x.rounds; got.loose += x.rounds; }
+      x.rounds = 0;
+    }
+    if (a.loose > 0) { this.pouch.loose += a.loose; got.loose += a.loose; a.loose = 0; }
+    this.injuries.bandages += band; this.injuries.tourniquets += tq;
+    got.band = band; got.tq = tq;
+    ai.bandages = 0; ai.tourniquets = 0;
+    if (a.medKit) { a.medKit.bandages = 0; a.medKit.tourniquets = 0; }
+    a.looted = true;
+    return got;
+  }
+
+  /** 보급 상자: 탄창·낱발·붕대·지혈대·수통 물 */
+  _openCrate(crate) {
+    if (crate.opened) return;
+    crate.opened = true;
+    this.supportMeshes.openCrate(crate);
+    const U = CONFIG.supply.crate, w = this.shooter.weapon, cap = CONFIG.weapons.rifle762.magCapacity;
+    let magNote = `탄창 ${U.mags}개`;
+    if (w.data === CONFIG.weapons.rifle762) for (let i = 0; i < U.mags; i++) w.mags.push({ rounds: cap });
+    else { this.pouch.loose += U.mags * cap; magNote = `탄창 ${U.mags}개 (이 총엔 맞지 않아 낱발로)`; }
+    this.pouch.loose += U.loose;
+    this.injuries.bandages += U.bandages;
+    this.injuries.tourniquets += U.tourniquets;
+    if (U.water) this.endurance.refillAll();
+    this.runtime.noteSupply('crate');
+    this.weaponAudio.mech('magIn');
+    this.hud.toast(`보급: ${magNote} · 낱발 ${U.loose}발 · 붕대 ${U.bandages} · 지혈대 ${U.tourniquets}${U.water ? ' · 수통을 채웠다' : ''}`, 3.5);
   }
 
   /** 지금 총을 발 앞에 내려놓고 새 총을 든다 (그 총의 탄창·장전 상태가 그대로 따라옴) */

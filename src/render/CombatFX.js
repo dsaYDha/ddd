@@ -915,12 +915,31 @@ export class CombatFX {
    */
   explosion(e) {
     if (!e || !e.point) return;
-    const P = this._P.set(e.point.x, e.point.y, e.point.z);
+    // 7단계 포탄: scale (박격포 ~1.5 · 포병 ~2.2 — 더 많이·넓게), air (나무 위 공중 폭발 — 땅 흙 대신 잎·가지가 쏟아짐)
+    const scale = e.scale ?? 1;
+    if (e.air) { this._airburst(e, scale); return; }
+    if (scale > 1.05) {
+      // 넓은 흙 기둥: 둘레 몇 군데에서 같은 폭발을 조금씩 (가운데 하나만 그을림)
+      const n = Math.min(4, Math.round((scale - 1) * 3));
+      const R = 0.9 * scale;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + this.rng.float();
+        const x = e.point.x + Math.cos(a) * R, z = e.point.z + Math.sin(a) * R;
+        const gy = this.groundHeight ? this.groundHeight(x, z) : e.point.y;
+        this._boomAt({ x, y: Number.isFinite(gy) ? gy + 0.1 : e.point.y, z }, 0.7, false);
+      }
+    }
+    this._boomAt(e.point, Math.min(1.6, scale), true);
+  }
+
+  /** 땅 폭발 하나 (k: 개수 배율, scorch: 그을린 자국) */
+  _boomAt(pt, kMul = 1, scorch = true) {
+    const P = this._P.set(pt.x, pt.y, pt.z);
     this._N.set(0, 1, 0);
     this._D.set(0, -1, 0);
     this._R.set(0, 1, 0);
     this._dist = this._hasCam ? this._cam.distanceTo(P) : 10;
-    this._k = this.q.spawn * (this._dist < 60 ? 1 : 0.6);
+    this._k = this.q.spawn * (this._dist < 60 ? 1 : 0.6) * kMul;
     this._near = this._dist < SMALL_DIST * 1.5;
     if (this.groundHeight) {
       const gy = this.groundHeight(P.x, P.z);
@@ -938,8 +957,34 @@ export class CombatFX {
       this._emitLeaves(L_SPEC.litter, this._cnt(L_SPEC.litter.n * 3, 4), P, up, 0.1);
     }
     // 그을린 자국 (땅)
-    if (this.groundHeight) { const g = this.groundHeight(P.x, P.z); if (Number.isFinite(g)) this._P.y = g + 0.02; }
-    this._decal(DECAL_SPEC.scorch, 'none', SCORCH_TINT);
+    if (scorch) {
+      if (this.groundHeight) { const g = this.groundHeight(P.x, P.z); if (Number.isFinite(g)) this._P.y = g + 0.02; }
+      this._decal(DECAL_SPEC.scorch, 'none', SCORCH_TINT);
+    }
+    this._boomAge = 0;
+    this._boomFresh = true;
+  }
+
+  /** 7단계 공중 폭발 (캐노피에 걸려 터짐): 섬광·불덩이·연기는 그 높이에서, 잎·잔가지·먼지가 아래로 쏟아짐 */
+  _airburst(e, scale) {
+    const P = this._P.set(e.point.x, e.point.y, e.point.z);
+    this._N.set(0, -1, 0);
+    this._D.set(0, -1, 0);
+    this._R.set(0, -1, 0);
+    this._dist = this._hasCam ? this._cam.distanceTo(P) : 10;
+    this._k = this.q.spawn * (this._dist < 80 ? 1 : 0.6) * Math.min(1.6, scale);
+    this._near = this._dist < SMALL_DIST * 3;
+    if (this.groundHeight) { const gy = this.groundHeight(P.x, P.z); this._fmode = 1; this._floor = Number.isFinite(gy) ? gy - 0.02 : -Infinity; } else { this._fmode = 2; this._floor = -Infinity; }
+    const up = this._A.set(0, 1, 0);
+    const down = this._B || (this._B = this._A.clone());
+    down.set(0, -1, 0);
+    this._emit(P_SPEC.boomFlash, 2, up);
+    this._emit(P_SPEC.boomFire, this._cnt(P_SPEC.boomFire.n * 1.5, 3), up);
+    this._emit(P_SPEC.boomSmoke, this._cnt(P_SPEC.boomSmoke.n * 1.3, 4), up);
+    this._emit(P_SPEC.boomRing, this._cnt(P_SPEC.boomRing.n, 4), down, 0.7, 0.6);
+    // 잎·잔가지가 비처럼 (멀어도 조금은)
+    this._emitLeaves(L_SPEC.litter, this._cnt(L_SPEC.litter.n * 6, 10), P, down, 0.3);
+    this._emitDebris(D_SPEC.boomClod, this._cnt(D_SPEC.boomClod.n * 0.5, 8), P, down, 0.2);
     this._boomAge = 0;
     this._boomFresh = true;
   }

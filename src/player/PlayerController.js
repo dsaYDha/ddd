@@ -39,6 +39,7 @@ export class PlayerController extends EventEmitter {
     this.flashToggle = false;
     this.blockFire = false;     // 6단계: 총구 막힘 (Game 이 정함)
     this.aimDelay = 0;          // 6단계: 덤불에 걸려 조준이 늦어지는 남은 시간 (s)
+    this.wheelOpen = false;     // 7단계: 명령 휠·지도 연필 (Game 이 정함) — 마우스는 휠·연필로, 클릭은 사격이 아님
     this._tHeld = 0;
     this._tUsed = false;
   }
@@ -101,6 +102,7 @@ export class PlayerController extends EventEmitter {
     // 6단계: 총구가 막히면 쏠 수 없고, 덤불에 걸린 동안은 조준이 늦어짐
     if (this.blockFire) W.trigger = W.triggerPressed = false;
     if (this.aimDelay > 0) { this.aimDelay = Math.max(0, this.aimDelay - dt); W.aim = W.holdBreath = false; }
+    if (this.wheelOpen) W.aim = W.trigger = W.triggerPressed = W.holdBreath = false;
     if (this.handsBusy) {
       // 손이 지도·나침반·탄창에 있음 → 사격·조준·재장전·모드 입력 없음
       W.aim = W.trigger = W.triggerPressed = W.holdBreath = W.reload = W.mode = W.magCheck = false;

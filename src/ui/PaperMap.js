@@ -3,6 +3,8 @@
 //   임무 목표·회수 지점은 연필 표시로만 (손으로 그은 듯 흔들린 선). 내 위치·적·작은 길·식생은 없다.
 //   꺼내고 넣는 데 각 1초 (CSS 전환) — 그동안·들고 있는 동안 손이 바쁘다 (Game 이 사격 막고 느린 걸음).
 //   브리핑 화면은 같은 그림을 작게 (drawTo).
+//  7단계: 지도를 든 동안 연필 끝 커서 (마우스로 — 시점 대신) · 클릭 → 지원 요청 메뉴 (Game 이 항목을 정함) ·
+//   요청한 지점은 연필 X 와 글 (내가 그은 표시뿐 — 실제 탄착·아군 위치는 지도에 없다)
 // =====================================================================
 import { RNG } from '../core/rng.js';
 
@@ -11,10 +13,19 @@ const INK = { contour: '#8b5a2b', contourMajor: '#7a4a1f', water: '#3f6f9a', wat
 
 export class PaperMap {
   constructor(root) {
-    root.insertAdjacentHTML('beforeend', `<div id="papermap"><canvas width="${PX}" height="${PX}"></canvas></div>`);
+    root.insertAdjacentHTML('beforeend', `<div id="papermap"><canvas width="${PX}" height="${PX}"></canvas><canvas class="overlay" width="${PX}" height="${PX}"></canvas></div>
+      <div id="mapmenu"><div class="title"></div><div class="items"></div></div>`);
     this.el = root.querySelector('#papermap');
     this.canvas = this.el.querySelector('canvas');
     this.ctx = this.canvas.getContext('2d');
+    this.overlay = this.el.querySelector('canvas.overlay');
+    this.octx = this.overlay.getContext('2d');
+    this.menuEl = root.querySelector('#mapmenu');
+    this.menuTitle = this.menuEl.querySelector('.title');
+    this.menuItems = this.menuEl.querySelector('.items');
+    this.cursor = null;          // 7단계: 연필 커서 (지도 px) — null 이면 없음
+    this.marks = [];             // 7단계: 요청 표시 [{x, z, label}] (월드 좌표)
+    this._menuKey = '';
     this.state = 'down';         // 'down' | 'raising' | 'up' | 'lowering'
     this.t = 0;
     this.drawn = null;
@@ -114,7 +125,81 @@ export class PaperMap {
     if (title) { c.font = 'bold 15px serif'; c.fillText(title, 40, 36); }
     // 연필 표시
     this._pencil(c, marks, X, Y);
-    this.drawn = { size: md.size };
+    this.drawn = { size: md.size, half: H };
+    this.marks = [];
+    this.cursor = null;
+    this._drawOverlay();
+  }
+
+  // ---- 7단계: 커서·요청 표시·메뉴 ----------------------------------------
+  /** 월드 x,z → 지도 px */
+  toMap(x, z) { const D = this.drawn; return D ? { u: (x + D.half) * PX / D.size, v: (z + D.half) * PX / D.size } : { u: 0, v: 0 }; }
+  /** 지도 px → 월드 x,z */
+  toWorld(u, v) { const D = this.drawn; return D ? { x: u * D.size / PX - D.half, z: v * D.size / PX - D.half } : { x: 0, z: 0 }; }
+
+  /** 커서 켜기 (지도 가운데 또는 마지막 자리) */
+  cursorOn() { if (!this.cursor) { this.cursor = { u: this._lastU ?? PX / 2, v: this._lastV ?? PX / 2 }; this._drawOverlay(); } }
+  cursorOff() { if (this.cursor) { this._lastU = this.cursor.u; this._lastV = this.cursor.v; this.cursor = null; this._drawOverlay(); } }
+
+  /** 커서 이동: rel {dx, dy} (화면 px 이동량) 또는 abs {x, y} (화면 좌표 — 끌어서 보기) */
+  moveCursor(rel, abs = null) {
+    if (!this.cursor) return;
+    const r = this.overlay.getBoundingClientRect();
+    const k = r.width > 10 ? PX / r.width : 1;
+    if (abs) { this.cursor.u = (abs.x - r.left) * k; this.cursor.v = (abs.y - r.top) * k; } else if (rel) { this.cursor.u += rel.dx * k * 0.85; this.cursor.v += rel.dy * k * 0.85; }
+    this.cursor.u = Math.max(8, Math.min(PX - 8, this.cursor.u));
+    this.cursor.v = Math.max(8, Math.min(PX - 8, this.cursor.v));
+    this._drawOverlay();
+  }
+
+  /** 커서가 가리키는 월드 지점 */
+  cursorWorld() { return this.cursor ? this.toWorld(this.cursor.u, this.cursor.v) : null; }
+
+  /** 요청 표시 추가 (연필 X + 글) */
+  addMark(x, z, label) { this.marks.push({ x, z, label, seed: this.marks.length * 13 + 5 }); this._drawOverlay(); }
+
+  _drawOverlay() {
+    const c = this.octx;
+    c.clearRect(0, 0, PX, PX);
+    c.lineCap = 'round'; c.lineJoin = 'round';
+    c.strokeStyle = INK.pencil; c.fillStyle = INK.pencil;
+    c.font = 'italic bold 22px "Comic Sans MS", cursive, serif';
+    for (const m of this.marks) {
+      const { u, v } = this.toMap(m.x, m.z);
+      const rng = new RNG(m.seed);
+      const j = () => rng.range(-1.4, 1.4);
+      c.lineWidth = 2.6;
+      c.beginPath(); c.moveTo(u - 11 + j(), v - 11 + j()); c.lineTo(u + 11 + j(), v + 11 + j());
+      c.moveTo(u - 11 + j(), v + 11 + j()); c.lineTo(u + 11 + j(), v - 11 + j()); c.stroke();
+      c.fillText(m.label, u + 14, v - 10);
+    }
+    const k = this.cursor;
+    if (k) {
+      // 연필 끝 (가리키는 점) + 연필 몸통
+      c.save(); c.translate(k.u, k.v);
+      c.fillStyle = 'rgba(40,38,44,0.95)';
+      c.beginPath(); c.arc(0, 0, 2.6, 0, Math.PI * 2); c.fill();
+      c.rotate(-0.75);
+      c.fillStyle = '#d6b25a'; c.fillRect(10, -5, 70, 10);
+      c.fillStyle = '#e8d2a6'; c.beginPath(); c.moveTo(10, -5); c.lineTo(0, 0); c.lineTo(10, 5); c.closePath(); c.fill();
+      c.fillStyle = '#3a3836'; c.beginPath(); c.moveTo(4, -2); c.lineTo(0, 0); c.lineTo(4, 2); c.closePath(); c.fill();
+      c.fillStyle = '#c98c8c'; c.fillRect(80, -5, 9, 10);
+      c.restore();
+      c.strokeStyle = 'rgba(40,38,44,0.35)'; c.lineWidth = 1;
+      c.beginPath(); c.arc(k.u, k.v, 16, 0, Math.PI * 2); c.stroke();
+    }
+  }
+
+  /** 지원 요청 메뉴: items [{label, off?}], index — null 이면 닫음 */
+  setMenu(title, items, index = 0) {
+    if (!items) { if (this._menuKey) { this.menuEl.style.display = 'none'; this._menuKey = ''; } return; }
+    const key = `${title}|${index}|${items.map((i) => i.label + (i.off ? '0' : '1')).join('/')}`;
+    if (key === this._menuKey) return;
+    this._menuKey = key;
+    this.menuEl.style.display = 'block';
+    this.menuTitle.textContent = title;
+    const esc = (t) => String(t).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+    this.menuItems.innerHTML = items.map((it, i) => `<div class="it${i === index ? ' sel' : ''}${it.off ? ' off' : ''}"><span class="k">${i + 1}</span>${esc(it.label)}</div>`).join('');
   }
 
   /** 종이 바탕: 누런 종이 + 섬유 얼룩 + 접힌 자국 */
@@ -233,5 +318,5 @@ export class PaperMap {
     s.opacity = String(Math.min(1, k * 3));
   }
 
-  hideNow() { this.state = 'down'; this.t = 0; this._apply(1); }
+  hideNow() { this.state = 'down'; this.t = 0; this._apply(1); this.cursorOff(); this.setMenu(null); }
 }

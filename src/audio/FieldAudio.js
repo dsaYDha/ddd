@@ -4,6 +4,8 @@
 //           철선 걸림 '딸깍·팅' (안전 손잡이가 튀는 작은 금속음), 꼬챙이 구덩이 (덮개 가지가 부러지며 떨어지는 소리)
 //   · 조명탄: 쏘는 '퐁' + 올라가는 '쉬익', 높은 곳에서 터지는 '팍', 타는 동안 지글거림 (흔들리는 위치에서)
 //   · 몸: 수통 마시기 (뚜껑·꿀꺽), 개울에서 채우기 (물 차는 꾸르륵), 탐침 (땅 찌르기), 철선 해제 (조심스러운 손·자르기), 손전등 딸깍
+//   · 7단계: 날아오는 포탄 (박격포 = 내려가는 휘파람, 포병 = 찢어지는 쉬익 — 탄착 1~2초 전), 포탄 폭발 (scale — 더 깊고 길게),
+//           먼 박격포 발사 '퉁', 보급 상자 떨어지는 '쿵'
 // =====================================================================
 import { CONFIG } from '../config.js';
 
@@ -26,19 +28,20 @@ export class FieldAudio {
   /**
    * 폭발. d: 거리 (m), pos: 위치 (HRTF), behind: 뒤쪽
    */
-  explosion({ distance = 30, pos = null, pan = 0, behind = false } = {}) {
+  explosion({ distance = 30, pos = null, pan = 0, behind = false, scale = 1 } = {}) {
     if (!this._ok()) return;
     const e = this.e, d = Math.max(1, distance);
     const t = e.now + 0.003 + d / CONFIG.ballistics.speedOfSound;
-    const near = clamp(1 - d / 60, 0, 1);
-    const att = 1 / (1 + d / 25);
+    const near = clamp(1 - d / (60 * scale), 0, 1);
+    const att = Math.min(1.6, 1 / (1 + d / (25 * scale)) * (0.75 + 0.25 * scale));
     const lp = clamp(16000 * Math.pow(15 / Math.max(15, d), 0.9) * (behind ? 0.75 : 1), 260, 16000);
     const v = e.voice({ gain: 1.5 * att, lowpass: lp, stages: 2, pan, pos, out: this.out, send: 0.5 + 0.8 * clamp(d / 150, 0, 1) });
     // 꽝: 넓은 대역 충격 (가까울수록 날카롭게)
     e.burst({ t, dur: 0.09 + 0.05 * near, attack: 0.0008, gain: 0.9, filter: 'lowpass', freq: 9000, q: 0.5, out: v });
     e.burst({ t, dur: 0.035, attack: 0.0005, gain: 0.6 * near, filter: 'highpass', freq: 1800, q: 0.7, out: v });
     // 땅을 울리는 저음 (멀리까지)
-    e.tone({ t, freq: 62, freqEnd: 26, dur: 1.4, gain: 0.9, attack: 0.004, release: 1.1, out: v });
+    e.tone({ t, freq: 62 / Math.sqrt(scale), freqEnd: 26, dur: 1.4 * Math.sqrt(scale), gain: 0.9, attack: 0.004, release: 1.1 * Math.sqrt(scale), out: v });
+    if (scale > 1.2) e.burst({ t: t + 0.15, dur: 2.5 * scale, attack: 0.3, gain: 0.25, filter: 'lowpass', freq: 220, q: 0.5, noise: 'brown', out: v });
     e.tone({ t: t + 0.01, freq: 110, freqEnd: 45, dur: 0.5, gain: 0.45, attack: 0.003, release: 0.4, out: v });
     // 굴러가는 울림 (숲에서 되돌아옴)
     e.burst({ t: t + 0.02, dur: 1.8, attack: 0.05, gain: 0.35, filter: 'lowpass', freq: 380, q: 0.6, noise: 'brown', out: v });
@@ -50,6 +53,54 @@ export class FieldAudio {
       }
       e.burst({ t: t + 0.4, dur: 1.8, attack: 0.2, gain: 0.06 * near, filter: 'bandpass', freq: 2600, q: 0.6, noise: 'pink', out: v });
     }
+  }
+
+  /** 7단계 날아오는 포탄 (eta 초 뒤 탄착) — 가까울수록 크게, 머리 위로 지나가는 위치에서 */
+  incoming({ kind = 'mortar', distance = 100, pos = null, eta = 1.5 } = {}) {
+    if (!this._ok()) return;
+    const e = this.e, d = Math.max(5, distance), t = e.now + 0.01, T = Math.max(0.4, eta);
+    const g = Math.min(1, 45 / d);
+    if (g < 0.06) return;
+    const v = e.voice({ gain: g, pos, out: this.out, send: 0.3, lowpass: clamp(14000 * Math.pow(40 / Math.max(40, d), 0.7), 900, 14000) });
+    if (kind === 'artillery') {
+      // 찢어지는 쉬익 — 화물 열차처럼 점점 커지며 낮아짐
+      e.burst({ t, dur: T, attack: T * 0.85, gain: 0.45, filter: 'bandpass', freq: 1400, freqEnd: 380, sweep: T, q: 0.8, noise: 'pink', out: v });
+      e.burst({ t: t + T * 0.4, dur: T * 0.6, attack: T * 0.5, gain: 0.3, filter: 'lowpass', freq: 500, q: 0.6, noise: 'brown', out: v });
+    } else {
+      // 박격포·적 박격포: 높은 휘파람이 내려감
+      e.tone({ t, freq: 2400, freqEnd: 820, dur: T, gain: 0.13, attack: T * 0.7, release: 0.06, out: v });
+      e.burst({ t, dur: T, attack: T * 0.7, gain: 0.07, filter: 'bandpass', freq: 2200, freqEnd: 900, sweep: T, q: 2.2, out: v });
+    }
+  }
+
+  /** 7단계 먼 박격포 발사 '퉁' (적 야영지에서) */
+  mortarLaunch({ distance = 200, pos = null } = {}) {
+    if (!this._ok()) return;
+    const e = this.e, d = Math.max(10, distance);
+    const t = e.now + 0.01 + d / CONFIG.ballistics.speedOfSound;
+    const v = e.voice({ gain: Math.min(1, 60 / d), lowpass: clamp(4000 * Math.pow(60 / Math.max(60, d), 0.6), 250, 4000), pos, out: this.out, send: 0.6 });
+    e.tone({ t, freq: 105, freqEnd: 48, dur: 0.4, gain: 0.8, attack: 0.003, release: 0.35, out: v });
+    e.burst({ t, dur: 0.12, attack: 0.002, gain: 0.5, filter: 'lowpass', freq: 900, q: 0.6, out: v });
+    e.burst({ t: t + 0.05, dur: 0.9, attack: 0.05, gain: 0.15, filter: 'lowpass', freq: 300, q: 0.5, noise: 'brown', out: v });
+  }
+
+  /** 7단계 보급 상자가 땅에 떨어짐 '쿵' */
+  crateThud({ distance = 20, pos = null } = {}) {
+    if (!this._ok()) return;
+    const e = this.e, d = Math.max(1, distance);
+    const t = e.now + 0.01 + d / CONFIG.ballistics.speedOfSound;
+    const v = e.voice({ gain: 1 / (1 + d / 15), pos, out: this.out, send: 0.3 });
+    e.tone({ t, freq: 130, freqEnd: 55, dur: 0.3, gain: 0.7, attack: 0.002, release: 0.25, out: v });
+    e.burst({ t, dur: 0.08, attack: 0.001, gain: 0.45, filter: 'bandpass', freq: 700, q: 0.9, out: v });
+    for (let i = 0; i < 4; i++) e.burst({ t: t + 0.05 + i * 0.03, dur: 0.02, attack: 0.001, gain: 0.12, filter: 'bandpass', freq: rand(1500, 3000), q: 2, out: v });
+  }
+
+  /** 7단계 탄창을 받음 (손에 '탁') */
+  magCatch() {
+    if (!this._ok()) return;
+    const e = this.e, t = e.now + 0.01;
+    e.burst({ t, dur: 0.03, attack: 0.001, gain: 0.3, filter: 'bandpass', freq: 1800, q: 1.5, out: this.body, pan: 0.2 });
+    e.tone({ t, freq: 900, freqEnd: 700, dur: 0.06, gain: 0.08, attack: 0.001, release: 0.05, out: this.body, pan: 0.2 });
   }
 
   /** 철선에 걸림: 안전 손잡이가 튀는 '팅' + 철선 떨림 (아주 가까워야 들림) */

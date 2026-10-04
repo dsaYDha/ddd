@@ -8,6 +8,7 @@
 // 4단계: F4 적 생성 메뉴 (↑↓ 고르기, ←→ 값 바꾸기, Enter 실행, F4 닫기).
 // 5단계: 무전 자막 (화면 아래 — 잡음과 함께 짧게), 내 위치·목표·거리 표시는 없다.
 // 6단계: 갈증이 심하면 맥박에 맞춰 시야가 어두워졌다 밝아짐 (thirstPulse), F10 6단계 시험 메뉴 (함정·시각·달·피로·갈증 — 디버그 모드).
+// 7단계: 분대 말 자막 (왼쪽 아래 — 이름: 말, 몇 초 뒤 사라짐. 들리는 거리 안의 말만 — Game 이 거름).
 const ICONS = {
   stand: '<svg viewBox="0 0 24 40"><circle cx="12" cy="5" r="3.2"/><path d="M8 11h8l1.5 13h-3l-.8 14h-3.4l-.8-14h-3z"/></svg>',
   crouch: '<svg viewBox="0 0 24 40"><circle cx="11" cy="15" r="3.2"/><path d="M7 20h8l3 7-3 2-1 9h-3.5l.5-8-5-2z"/></svg>',
@@ -27,6 +28,7 @@ export class HUD {
       <div id="corner-tr"><div id="hitlog"><div class="title">피격 로그 (F8)</div><div class="lines"></div></div>
         <div id="f7hint">제압 테스트 중 (F7로 중지)</div></div>
       <div id="radio"><span class="tag">무전</span><span class="text"></span></div>
+      <div id="chatter"></div>
       <div id="toast"></div>
       <div id="hitflash"></div>
       <div id="blackout"></div>
@@ -64,6 +66,8 @@ export class HUD {
     this.radioEl = root.querySelector('#radio');
     this.radioText = root.querySelector('#radio .text');
     this._radioTimer = 0;
+    this.chatterEl = root.querySelector('#chatter');
+    this._chat = [];          // { el, t }
     this._stance = '';
     this._toastTimer = 0;
     this.pulse = 0;
@@ -84,7 +88,19 @@ export class HUD {
     this._radioTimer = seconds;
   }
 
-  clearRadio() { this._radioTimer = 0; this.radioEl.classList.remove('show'); }
+  clearRadio() { this._radioTimer = 0; this.radioEl.classList.remove('show'); this.clearChatter(); }
+
+  /** 7단계 분대 말 자막: who (이름), text, opts { me: 내 말, far: 멀리서 (흐리게) } — 최근 4줄 */
+  chatter(who, text, opts = {}) {
+    const el = document.createElement('div');
+    el.className = `line${opts.me ? ' me' : ''}${opts.far ? ' far' : ''}`;
+    el.innerHTML = `<span class="who">${esc(who)}</span>${esc(text)}`;
+    this.chatterEl.appendChild(el);
+    this._chat.push({ el, t: 3.2 + String(text).length * 0.06 });
+    while (this._chat.length > 4) this._chat.shift().el.remove();
+  }
+
+  clearChatter() { for (const c of this._chat) c.el.remove(); this._chat.length = 0; }
 
   /** F8 피격 로그 (최신이 앞). null 이면 숨김 */
   setHitLog(entries) {
@@ -211,6 +227,12 @@ export class HUD {
     if (this._radioTimer > 0) {
       this._radioTimer -= dt;
       if (this._radioTimer <= 0) this.radioEl.classList.remove('show');
+    }
+    for (let i = this._chat.length - 1; i >= 0; i--) {
+      const c = this._chat[i];
+      c.t -= dt;
+      if (c.t < 0.6) c.el.style.opacity = Math.max(0, c.t / 0.6).toFixed(2);
+      if (c.t <= 0) { c.el.remove(); this._chat.splice(i, 1); }
     }
   }
 }

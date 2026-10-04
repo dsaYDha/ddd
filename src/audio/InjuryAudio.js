@@ -34,6 +34,32 @@ const SHOUTS = {
   scream: [['', 'ah', 1.0, 2.3, 1.6]],
 };
 
+// 7단계 말 (분대원 보고·대답·플레이어 명령): 자막 글자의 음절을 따라 — 초성 → 자음 터짐, 중성 → 모음 포먼트, 받침 → 조금 길게.
+//  뜻은 자막으로 전하고, 소리는 같은 길이·리듬의 말처럼 들린다 (숫자는 한 자씩 읽음)
+const CHO = ['k', 'k', '', 't', 't', '', '', 'b', 'p', 'h', 'h', '', 't', 't', 't', 'k', 't', 'p', 'h'];
+const JUNG = ['ah', 'eh', 'ah', 'eh', 'uh', 'eh', 'uh', 'eh', 'oh', 'ah', 'eh', 'eh', 'oh', 'oh', 'uh', 'eh', 'ee', 'oh', 'uh', 'ee', 'ee'];
+const DIGIT = ['공', '일', '이', '삼', '사', '오', '육', '칠', '팔', '구'];
+
+/** 글 → 음절 [{cons, vowel, dur, gap, stress}] (최대 max 음절) */
+export function speechPattern(text, max = 16) {
+  const out = [];
+  for (const ch0 of String(text)) {
+    const ch = ch0 >= '0' && ch0 <= '9' ? DIGIT[ch0.charCodeAt(0) - 48] : ch0;
+    const c = ch.charCodeAt(0);
+    const last = out[out.length - 1];
+    if (c >= 0xac00 && c <= 0xd7a3) {
+      if (out.length >= max) continue;
+      const k = c - 0xac00;
+      out.push({ cons: CHO[Math.floor(k / 588)], vowel: JUNG[Math.floor((k % 588) / 28)], dur: k % 28 ? 0.15 : 0.12, gap: 0, stress: '' });
+    } else if (!last) continue;
+    else if (ch === '!' || ch === '?') { last.stress = ch; last.gap += 0.16; }
+    else if (ch === ',' || ch === '.') last.gap += 0.12;
+    else if (ch === '…') last.gap += 0.3;
+    else if (ch === ' ') last.gap += 0.035;
+  }
+  return out;
+}
+
 export class InjuryAudio {
   /** @param {import('./AudioEngine.js').AudioEngine} engine */
   constructor(engine) {
@@ -169,6 +195,40 @@ export class InjuryAudio {
       const len = dur * rand(0.9, 1.12);
       this._voice({ t, dur: len, f0: f0 * p0, f1: f0 * p1, peak: f0 * Math.max(p0, p1) * 1.04, vowel, gain: loud, breath: kind === 'scream' ? 0.2 : 0.08, out: v, formant: fm, shout: true });
       t += len + rand(0.04, 0.09);
+    }
+  }
+
+  /**
+   * 7단계 말: text 의 음절대로 (speechPattern). loud: 'shout' (외침 — 멀리까지) | 'call' (보통 크게) | 'quiet' (낮게),
+   * own: 내 목소리 (몸 안에서 — 거리·방향 없음)
+   */
+  speak(text, { distance = 10, pan = 0, behind = false, pos = null, voice = null, weak = 1, loud = 'shout', own = false } = {}) {
+    if (!this.ok) return;
+    const syl = speechPattern(text);
+    if (!syl.length) return;
+    const e = this.e, F = SHOUT_FAR;
+    const d = own ? 0.5 : Math.max(0.5, distance);
+    if (d > 150) return;
+    const quiet = loud === 'quiet';
+    const lp = Math.max(F.minLp, F.lpHz * Math.pow(F.lpRefM / Math.max(F.lpRefM, d), F.lpExp) * (behind ? 0.8 : 1));
+    const v = own
+      ? e.voice({ gain: 0.5, out: e.buses.body ?? e.master, pan: 0 })
+      : e.voice({ gain: 1 / (1 + d * F.fall), lowpass: lp, stages: 2, pan, pos, out: e.buses.ambience, send: F.send + F.farSend * Math.min(1, d / F.farM) });
+    const f0 = (voice?.f0 ?? rand(105, 145)) * (quiet ? 0.9 : loud === 'call' ? 1.05 : 1.16);
+    const fm = voice?.formant ?? 1;
+    const g = (quiet ? 0.16 : loud === 'call' ? 0.32 : 0.42) * weak;
+    let t = e.now + 0.01 + (own ? 0 : d / CONFIG.ballistics.speedOfSound);
+    const n = syl.length;
+    for (let i = 0; i < n; i++) {
+      const s = syl[i];
+      if (s.cons) t = this._consonant(t, s.cons, g * 0.8, v);
+      // 억양: 처음이 높고 점점 내려감 · '!' 는 올렸다 떨어지고 '?' 는 끝을 올림
+      const decl = 1.16 - 0.2 * (i / Math.max(1, n - 1));
+      const p0 = s.stress === '!' ? decl * 1.1 : decl;
+      const p1 = s.stress === '!' ? decl * 0.9 : s.stress === '?' ? decl * 1.18 : decl * 0.97;
+      const len = s.dur * (s.stress ? 1.45 : 1) * rand(0.9, 1.1) * (quiet ? 1.1 : 1);
+      this._voice({ t, dur: len, f0: f0 * p0, f1: f0 * p1, vowel: s.vowel, gain: g, breath: quiet ? 0.12 : 0.06, out: v, formant: fm, shout: !quiet });
+      t += len + 0.025 + s.gap;
     }
   }
 

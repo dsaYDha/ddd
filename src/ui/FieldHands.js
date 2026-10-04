@@ -4,6 +4,7 @@
 //   · refill: 개울물에 수통을 담금 — 물결·공기 방울
 //   · probe: 대검 끝으로 발 앞 땅을 비스듬히 찔러 봄 (찌르고 빼기를 반복)
 //   · disarm: 왼손으로 철선을 잡고 오른손 칼로 조심스럽게 끊음
+//   · signal (7단계): 수신호 — 총에서 오른손을 떼어 팔 동작 (정지 = 든 주먹, 따라와 = 앞으로 손짓, 엎드려 = 손바닥을 누름 …)
 //  밤에는 손이 어둡게 (setLight — 장면 빛 수준 + 손전등)
 // =====================================================================
 const W = 520, H = 360;
@@ -17,7 +18,11 @@ export class FieldHands {
     this.mode = null;
     this.time = 0;
     this._light = -1;
+    this.signalKey = 'halt';
   }
+
+  /** 7단계: 다음 'signal' 동작의 명령 종류 */
+  signal(key) { this.signalKey = key; }
 
   /** mode: 'drink'|'refill'|'probe'|'disarm'|null, p: 진행 0~1 */
   update(dt, mode, p = 0) {
@@ -87,12 +92,71 @@ export class FieldHands {
     c.restore();
   }
 
+  /** 편 손 (손바닥 — 중심 x,y, 회전 a: 손가락 방향) */
+  _flat(c, x, y, a, s = 1) {
+    c.save(); c.translate(x, y); c.rotate(a); c.scale(s, s);
+    c.fillStyle = this._skin(c, -30, -50, 30, 40);
+    c.beginPath(); c.ellipse(0, 6, 30, 34, 0, 0, Math.PI * 2); c.fill();      // 손바닥
+    for (let i = 0; i < 4; i++) {                                              // 손가락 (위쪽으로)
+      c.beginPath(); c.ellipse(-18 + i * 12, -38 + Math.abs(i - 1.5) * 4, 6.2, 20, 0, 0, Math.PI * 2); c.fill();
+    }
+    c.beginPath(); c.ellipse(30, 4, 7, 17, -0.7, 0, Math.PI * 2); c.fill();   // 엄지
+    c.strokeStyle = 'rgba(40,25,15,0.3)'; c.lineWidth = 1.2;
+    for (let i = 0; i < 3; i++) { c.beginPath(); c.moveTo(-12 + i * 12, -22); c.lineTo(-12 + i * 12, -6); c.stroke(); }
+    c.restore();
+  }
+
+  /** 가리키는 손 (주먹 + 검지 — a 방향으로) */
+  _point(c, x, y, a, s = 1) {
+    c.save(); c.translate(x, y); c.rotate(a); c.scale(s, s);
+    c.fillStyle = this._skin(c, -30, -60, 30, 30);
+    c.beginPath(); c.ellipse(-4, -54, 6.5, 24, 0, 0, Math.PI * 2); c.fill();
+    c.restore();
+    this._fist(c, x, y, a, s);
+  }
+
+  /** 수신호 팔: 어깨 (오른쪽 아래 밖) → 손목 → 손 모양 */
+  _signal(key, p) {
+    const c = this.ctx, t = this.time;
+    const up = Math.min(1, p / 0.18) * (p > 0.88 ? Math.max(0, 1 - (p - 0.88) / 0.12) : 1);
+    const lift = (1 - up) * 260;
+    let hx = W * 0.6, hy = H * 0.34 + lift, a = 0, shape = 'fist';
+    const osc = (f) => Math.sin(t * Math.PI * 2 * f);
+    switch (key) {
+      case 'halt': hx = W * 0.62; hy = H * 0.3 + lift; a = -0.1; shape = 'fist'; break;
+      case 'follow': hx = W * 0.58 - osc(1.6) * 26; hy = H * 0.33 + lift + osc(1.6) * 10; a = -0.9 - osc(1.6) * 0.3; shape = 'flat'; break;
+      case 'moveTo': hx = W * 0.5 + Math.max(0, osc(1.2)) * 20; hy = H * 0.4 + lift; a = -1.2; shape = 'flat'; break;
+      case 'retreat': hx = W * 0.6 + Math.cos(t * 5) * 34; hy = H * 0.24 + lift + Math.sin(t * 5) * 18; a = Math.cos(t * 5) * 0.4; shape = 'flat'; break;
+      case 'prone': hx = W * 0.6; hy = H * 0.42 + lift + Math.max(0, osc(1.4)) * 38; a = Math.PI / 2 - 0.2; shape = 'flat'; break;
+      case 'hold': hx = W * 0.6; hy = H * 0.3 + lift; a = 0; shape = 'flat'; break;
+      case 'file': hx = W * 0.62; hy = H * 0.26 + lift; a = 0; shape = 'point'; break;
+      case 'wedge': hx = W * 0.56; hy = H * 0.3 + lift; a = -0.6; shape = 'flat'; break;
+      case 'spread': hx = W * 0.58 + osc(0.9) * 70; hy = H * 0.36 + lift; a = -0.2 + osc(0.9) * 0.4; shape = 'flat'; break;
+      case 'holdFire': hx = W * 0.56 + osc(2.2) * 60; hy = H * 0.38 + lift; a = Math.PI / 2 * 0.9; shape = 'flat'; break;
+      case 'freeFire': case 'suppress': hx = W * 0.5 + Math.max(0, osc(key === 'suppress' ? 2.4 : 1.4)) * 24; hy = H * 0.38 + lift; a = -1.25; shape = 'point'; break;
+      case 'onMyShot': hx = W * 0.64; hy = H * 0.28 + lift; a = 0.1; shape = 'point'; break;
+      case 'medic': hx = W * 0.66; hy = H * 0.12 + lift + Math.max(0, osc(1.8)) * 26; a = 0.2; shape = 'flat'; break;
+      case 'ammo': hx = W * 0.6; hy = H * 0.56 + lift + Math.max(0, osc(2)) * 18; a = Math.PI / 2; shape = 'flat'; break;
+      default: break;
+    }
+    // 팔꿈치 (어깨와 손 사이, 바깥으로 꺾임)
+    const sx = W * 0.98, sy = H + 80;
+    const ex = (sx + hx) / 2 + 40, ey = (sy + hy) / 2 + 30;
+    this._sleeve(c, sx, sy, ex, ey, 84);
+    this._sleeve(c, ex, ey, hx + 14, hy + 46, 70);
+    if (shape === 'flat') this._flat(c, hx, hy, a, 0.95);
+    else if (shape === 'point') this._point(c, hx, hy, a, 0.95);
+    else this._fist(c, hx, hy, a - 1.4, 1.0);
+  }
+
   _draw(mode, p) {
     const c = this.ctx, t = this.time;
     c.clearRect(0, 0, W, H);
     c.lineCap = 'round'; c.lineJoin = 'round';
     const ease = (v) => v * v * (3 - 2 * v);
-    if (mode === 'drink') {
+    if (mode === 'signal') {
+      this._signal(this.signalKey, p);
+    } else if (mode === 'drink') {
       // 들어 올림 (0~0.2) → 기울여 마심 (꿀꺽마다 출렁) → 내림 (0.9~1)
       const up = p < 0.2 ? ease(p / 0.2) : p > 0.9 ? 1 - ease((p - 0.9) / 0.1) : 1;
       const gulp = Math.sin(t * 9) * 0.03 * (p > 0.2 && p < 0.9 ? 1 : 0);

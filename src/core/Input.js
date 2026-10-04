@@ -14,6 +14,8 @@ export class Input extends EventEmitter {
     this.pressedQueue = new Set();
     this.mouseDX = 0;
     this.mouseDY = 0;
+    this.clientX = window.innerWidth / 2;
+    this.clientY = window.innerHeight / 2;
     this.locked = false;
     // 포인터 잠금을 쓸 수 없는 환경(일부 임베드 뷰 등): 마우스를 누른 채 끌어서 시점 이동
     //  (왼쪽·오른쪽 버튼 끌기 = 시점, 오른쪽 버튼 = 조준 그대로, 사격은 F)
@@ -47,6 +49,7 @@ export class Input extends EventEmitter {
     });
     window.addEventListener('blur', () => { this.down.clear(); this._dragging = false; });
     document.addEventListener('mousemove', (e) => {
+      this.clientX = e.clientX; this.clientY = e.clientY;   // 7단계: 끌어서 보기 환경의 명령 휠·지도 연필 (화면 커서 위치)
       if (!this.locked && !(this.dragLook && this._dragging)) return;
       // 일부 브라우저의 포인터 잠금 직후 튀는 값 무시
       if (Math.abs(e.movementX) > 400 || Math.abs(e.movementY) > 400) return;
