@@ -1,4 +1,11 @@
 // 정글 환경음 (벌레·새·먼 울음소리·바람) + 날씨 연동 빗소리
+// 4단계: 동물 정적 (ai/Wildlife) — 벌레 합창은 동·서·남·북 네 방향으로 나눠 (방향마다 독립 잡음) 그쪽 활동도만큼 크게,
+//  HRTF 로 듣는 사람 기준 방향에 둔다 → 한쪽이 갑자기 조용해지면 그쪽에 누가 있다. 새는 활동도가 살아 있는 곳에서만,
+//  나무 위 3D 위치에서 운다. 총성 뒤 일대가 30~90초 조용해지고 천천히 살아난다.
+const QUAD_DIRS = [{ k: 'n', x: 0, z: -1 }, { k: 'e', x: 1, z: 0 }, { k: 's', x: 0, z: 1 }, { k: 'w', x: -1, z: 0 }];
+const QUAD_RADIUS = 45;      // 방향별 활동도를 재는 거리 (m) — 20m·38m 두 점
+const QUAD_PLACE = 14;       // 방향 버스 HRTF 위치까지 거리 (m — 방향만 의미)
+
 export class Ambience {
   constructor(engine) {
     this.e = engine;
@@ -9,7 +16,12 @@ export class Ambience {
     this.underCanopy = 1;
     this.nearWater = 0;
     this.timers = { bird: 1, call: 8, frog: 3, drip: 0.5, gibbon: 12 };
+    this.wildlife = null;      // ai/Wildlife (4단계) — 없으면 어디나 활동도 1
+    this._q = { n: 1, e: 1, s: 1, w: 1 };
   }
+
+  /** 4단계 동물 활동도 격자 연결 */
+  setWildlife(w) { this.wildlife = w ?? null; }
 
   start() {
     if (this.started || !this.e.ready) return;
@@ -18,23 +30,41 @@ export class Ambience {
     const out = this.e.buses.ambience;
     const wout = this.e.buses.weather;
 
-    // 매미류: 대역 노이즈를 빠른 LFO로 진폭 변조
+    // 방향 버스 4개 (동물 활동도 × HRTF 방향, HRTF 가 없으면 좌우 팬)
+    this.quads = QUAD_DIRS.map((d) => {
+      const bus = ctx.createGain(); bus.gain.value = 1;
+      let pan = null;
+      if (this.e.hrtf && ctx.createPanner) {
+        pan = ctx.createPanner();
+        pan.panningModel = 'HRTF'; pan.distanceModel = 'linear'; pan.rolloffFactor = 0; pan.refDistance = 1; pan.maxDistance = 100000;
+      } else if (ctx.createStereoPanner) pan = ctx.createStereoPanner();
+      if (pan) bus.connect(pan).connect(out); else bus.connect(out);
+      return { ...d, bus, pan, act: 1 };
+    });
+    // 매미류: 대역 노이즈를 빠른 LFO로 진폭 변조 — 같은 종류는 LFO·물결을 같이 쓰고 잡음은 방향마다 따로 (서로 다른 곳의 벌레들)
     const mkInsect = (freq, q, lfoRate, depth, gain) => {
-      const src = this.e.noise('white', true);
-      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = freq; bp.Q.value = q;
-      const am = ctx.createGain(); am.gain.value = 1 - depth;
       const lfo = ctx.createOscillator(); lfo.frequency.value = lfoRate;
       const lg = ctx.createGain(); lg.gain.value = depth;
-      lfo.connect(lg).connect(am.gain);
+      lfo.connect(lg);
       // 느린 물결 (합창이 커졌다 작아졌다)
       const swell = ctx.createOscillator(); swell.frequency.value = 0.04 + Math.random() * 0.05;
-      const sw = ctx.createGain(); sw.gain.value = 0.7;
       const sg = ctx.createGain(); sg.gain.value = 0.3;
-      swell.connect(sg).connect(sw.gain);
-      const level = ctx.createGain(); level.gain.value = gain;
-      src.connect(bp).connect(am).connect(sw).connect(level).connect(out);
-      src.start(0, src._offset); lfo.start(); swell.start();
-      return level;
+      swell.connect(sg);
+      const levels = this.quads.map((qd) => {
+        const src = this.e.noise('white', true);
+        const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = freq * (0.97 + Math.random() * 0.06); bp.Q.value = q;
+        const am = ctx.createGain(); am.gain.value = 1 - depth;
+        lg.connect(am.gain);
+        const sw = ctx.createGain(); sw.gain.value = 0.7;
+        sg.connect(sw.gain);
+        // 네 방향의 합 ≈ 예전 하나 크기 (서로 다른 잡음이라 전력 합: ×1/√4)
+        const level = ctx.createGain(); level.gain.value = gain;
+        src.connect(bp).connect(am).connect(sw).connect(level).connect(qd.bus);
+        src.start(0, src._offset);
+        return level;
+      });
+      lfo.start(); swell.start();
+      return levels;
     };
     this.cicada = mkInsect(4300, 7, 42, 0.85, 0.0);
     this.cicada2 = mkInsect(5600, 9, 61, 0.7, 0.0);
@@ -84,9 +114,11 @@ export class Ambience {
     const ctx = this.e.ctx, t = ctx.currentTime;
     const mask = 1 - 0.65 * rain;  // 비가 오면 벌레·새 소리가 묻힘
     const set = (param, v, tc = 0.8) => param.setTargetAtTime(v, t, tc);
-    set(this.cicada.gain, (0.03 * tod.day + 0.02 * tod.dusk + 0.004 * tod.dawn) * mask);
-    set(this.cicada2.gain, (0.012 * tod.day + 0.018 * tod.dusk) * mask);
-    set(this.cricket.gain, (0.025 * tod.dusk + 0.012 * tod.dawn) * mask);
+    const setAll = (levels, v) => { for (const l of levels) set(l.gain, v * 0.5); };   // 4방향 전력 합 = 예전 하나
+    setAll(this.cicada, (0.03 * tod.day + 0.02 * tod.dusk + 0.004 * tod.dawn) * mask);
+    setAll(this.cicada2, (0.012 * tod.day + 0.018 * tod.dusk) * mask);
+    setAll(this.cricket, (0.025 * tod.dusk + 0.012 * tod.dawn) * mask);
+    this._updateQuads();
     set(this.bedGain.gain, 0.04 + 0.03 * wind);
     set(this.leafGain.gain, 0.012 + 0.03 * wind);
     set(this.rainHiss.gain, 0.09 * rain * (0.7 + 0.3 * underCanopy));
@@ -124,11 +156,54 @@ export class Ambience {
 
   _rand(a, b) { return a + Math.random() * (b - a); }
 
+  /** 방향 버스: 그쪽 동물 활동도 (조용해질 땐 빨리, 살아날 땐 Wildlife 가 천천히) + 듣는 사람 기준 방향 */
+  _updateQuads() {
+    const L = this.e.listener, W = this.wildlife;
+    const q = W && L ? W.quadrants(L.x, L.z, QUAD_RADIUS, this._q) : null;
+    const t = this.e.ctx.currentTime;
+    for (const qd of this.quads) {
+      const act = q ? Math.max(0.02, q[qd.k]) : 1;
+      if (Math.abs(act - qd.act) > 0.01) { qd.act = act; qd.bus.gain.setTargetAtTime(act, t, 0.6); }
+      if (!qd.pan) continue;
+      if (qd.pan.pan) {
+        // 좌우 팬 (HRTF 없음): 오른쪽 성분
+        const yaw = L ? L.yaw : 0;
+        const right = qd.x * Math.cos(yaw) - qd.z * Math.sin(yaw);
+        qd.pan.pan.setTargetAtTime(0.7 * right, t, 0.1);
+      } else if (L) {
+        this.e.placePanner(qd.pan, { x: L.x + qd.x * QUAD_PLACE, y: L.y + 2, z: L.z + qd.z * QUAD_PLACE });
+      }
+    }
+  }
+
+  /**
+   * 동물 소리 하나의 자리: 듣는 사람 주변 dmin~dmax m 무작위 방향 — 그 자리가 조용하면 (활동도) 울지 않음 → null.
+   * 반환 { out (HRTF 위치 경로 또는 버스), pan (HRTF 면 undefined), far (0.3~1: 가까울수록 1) }
+   */
+  _spot(dmin, dmax, height = [3, 14], panMax = 0.9) {
+    const e = this.e, L = e.listener, W = this.wildlife;
+    const dist = this._rand(dmin, dmax);
+    const far = Math.max(0.3, Math.min(1, 1.15 - dist / (dmax * 1.2)));
+    if (!L) return { out: e.buses.ambience, pan: this._rand(-panMax, panMax), far: this._rand(0.3, 1) };
+    const a = Math.random() * Math.PI * 2;
+    const x = L.x + Math.cos(a) * dist, z = L.z + Math.sin(a) * dist;
+    if (W && Math.random() > W.activityAt(x, z)) return null;
+    if (!e.hrtf) {
+      const right = Math.cos(a) * Math.cos(L.yaw) - Math.sin(a) * Math.sin(L.yaw);
+      return { out: e.buses.ambience, pan: panMax * right, far };
+    }
+    const v = e.voice({ gain: 1, pos: { x, y: L.y + this._rand(height[0], height[1]), z }, out: e.buses.ambience });
+    return { out: v, pan: undefined, far };
+  }
+
   _bird() {
-    const e = this.e, out = e.buses.ambience;
+    const e = this.e;
+    const sp = this._spot(10, 70);
+    if (!sp) return;
+    const out = sp.out;
     const t = e.now + 0.02;
-    const pan = this._rand(-0.9, 0.9);
-    const far = this._rand(0.3, 1);
+    const pan = sp.pan;
+    const far = sp.far;
     const g = 0.05 * far;
     const filter = { type: 'lowpass', freq: 2500 + 6000 * far };
     const kind = Math.floor(Math.random() * 5);
@@ -166,10 +241,13 @@ export class Ambience {
   }
 
   _gibbon() {
-    // 긴팔원숭이: 점점 빨라지며 올라가는 울음 (먼 곳)
-    const e = this.e, out = e.buses.ambience;
+    // 긴팔원숭이: 점점 빨라지며 올라가는 울음 (먼 곳 — 총성으로 조용해진 쪽에서는 울지 않음)
+    const e = this.e;
+    const sp = this._spot(90, 160, [15, 25], 0.8);
+    if (!sp) return;
+    const out = sp.out;
     const t = e.now + 0.05;
-    const pan = this._rand(-0.8, 0.8);
+    const pan = sp.pan;
     const n = 6 + Math.floor(Math.random() * 6);
     let tt = t;
     for (let i = 0; i < n; i++) {
@@ -183,18 +261,24 @@ export class Ambience {
 
   _distantCall() {
     // 먼 짐승 울음 / 새의 긴 울음
-    const e = this.e, out = e.buses.ambience;
+    const e = this.e;
+    const sp = this._spot(80, 150, [4, 20], 1);
+    if (!sp) return;
+    const out = sp.out;
     const t = e.now + 0.05;
-    const pan = this._rand(-1, 1);
+    const pan = sp.pan;
     const f = this._rand(300, 650);
     e.tone({ t, freq: f, points: [[0.3, f * 1.5], [0.9, f * 0.7]], dur: 1.0, gain: 0.02, attack: 0.1, wave: 'triangle', out, pan, filter: { type: 'lowpass', freq: 1200 } });
     e.tone({ t: t + 1.2, freq: f * 0.9, points: [[0.3, f * 1.3], [0.8, f * 0.65]], dur: 0.9, gain: 0.015, attack: 0.1, wave: 'triangle', out, pan, filter: { type: 'lowpass', freq: 1000 } });
   }
 
   _frog() {
-    const e = this.e, out = e.buses.ambience;
+    const e = this.e;
+    const sp = this._spot(6, 40, [0.1, 0.4]);
+    if (!sp) return;
+    const out = sp.out;
     const t = e.now + 0.02;
-    const pan = this._rand(-0.9, 0.9);
+    const pan = sp.pan;
     const f = this._rand(140, 320);
     const n = 1 + Math.floor(Math.random() * 3);
     for (let i = 0; i < n; i++) {

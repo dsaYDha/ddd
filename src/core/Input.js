@@ -4,7 +4,7 @@
 import { EventEmitter } from './EventEmitter.js';
 
 // F7 = 일부 브라우저의 '캐럿 탐색' 토글, F3 = 찾기 — 게임 키로 쓰므로 막는다 (3단계: F9 피격 테스트)
-const PREVENT = new Set(['Space', 'F3', 'F6', 'F7', 'F8', 'F9', 'Tab', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown']);
+const PREVENT = new Set(['Space', 'F2', 'F3', 'F4', 'F6', 'F7', 'F8', 'F9', 'Tab', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 
 export class Input extends EventEmitter {
   constructor(element) {

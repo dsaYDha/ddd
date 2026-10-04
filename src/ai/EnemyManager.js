@@ -92,7 +92,8 @@ export class EnemyManager extends EventEmitter {
     }
     const squad = new Squad(this, { type: 'patrol', route, rng });
     this.squads.push(squad);
-    const roles = ['point', 'leader'];
+    // 첨병 + 분대장 + 소총수 (한 명만 남았으면 분대장 혼자 — 최대 인원 제한으로 잘렸을 때)
+    const roles = size >= 2 ? ['point', 'leader'] : ['leader'];
     while (roles.length < size) roles.push('rifleman');
     if (o.mg !== false && size >= 3) roles[size - 2 >= 2 ? size - 2 : size - 1] = 'mg';
     const r0 = squad.routeAt(0), r1 = squad.routeAt(4);
@@ -109,7 +110,7 @@ export class EnemyManager extends EventEmitter {
     }
     let back = 0;
     roles.forEach((role, i) => {
-      if (i > 0) back += squad.spacing[i];
+      if (i > 0) back += squad.spacing[i] ?? 0;
       const p = squad.routeAt(Math.max(0, squad.pointS - back)) ?? this.nav.nearestOpen(r0.x - dx * back, r0.z - dz * back, 4) ?? r0;
       const s = new Soldier(this, {
         x: p.x, z: p.z, yaw: yawOf(dx, dz), stance: 'stand', rng: new RNG(rng.int(1, 2 ** 30)), role: role === 'point' ? 'rifleman' : role,
@@ -191,6 +192,9 @@ export class EnemyManager extends EventEmitter {
   _addSoldier(s) {
     this.soldiers.push(s);
     this._byMotor.set(s.motor, s);
+    // 화면·소리 쪽 (Game) 이 병사마다 구독하지 않게 다시 보냄: 신음·핏자국·쓰러짐·식물 헤치는 소리
+    for (const ev of ['vocal', 'bleed', 'fall']) s.on(ev, (e) => this.emit(ev, { ...e, soldier: s }));
+    s.motor.on('rustle', (e) => this.emit('rustle', { soldier: s, evt: e }));
     // 시체가 너무 많으면 오래된 것부터 치움
     const dead = this.soldiers.filter((x) => !x.alive);
     if (this.soldiers.length > MAX_BODIES && dead.length) this._remove(dead[0]);

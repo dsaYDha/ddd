@@ -88,7 +88,13 @@ button.primary:focus-visible, select:focus-visible, input:focus-visible { outlin
 #death .cause { font-size: 17px; }
 #death .time { font-size: 15px; color: #8d877a; }
 #death .again { margin-top: 26px; font-size: 13px; color: #6f6a60; letter-spacing: 0.08em; }
-#hittest { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: none; padding: 8px 12px; font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace;
+#hittest, #spawnmenu { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: none; padding: 8px 12px; font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace;
   background: rgba(0, 0, 0, 0.62); color: #cfc8b6; border-radius: 4px; z-index: 20; }
-#hittest .title { color: var(--accent); font-size: 11px; letter-spacing: 0.05em; margin-bottom: 4px; }
-#hittest .sel { color: #fff3c8; }
+#hittest .title, #spawnmenu .title { color: var(--accent); font-size: 11px; letter-spacing: 0.05em; margin-bottom: 4px; }
+#hittest .sel, #spawnmenu .sel { color: #fff3c8; }
+#spawnmenu .val { color: #9fd0ff; }
+/* 4단계 F2 AI 디버그 글자표 (병사 머리 위) */
+#aidebug { position: absolute; inset: 0; pointer-events: none; display: none; z-index: 12; overflow: hidden; }
+#aidebug .ai-label { position: absolute; left: 0; top: 0; white-space: nowrap; font: 10px/1.35 ui-monospace, Menlo, Consolas, monospace;
+  color: #d8d2c2; background: rgba(0, 0, 0, 0.55); padding: 2px 5px; border-radius: 3px; }
+#aidebug .ai-label .m { color: #a9a395; }

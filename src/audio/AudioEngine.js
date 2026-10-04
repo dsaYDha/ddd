@@ -6,6 +6,9 @@
 //   잔향 보내기 → Convolver(정글 IR) ──┴→ world → muffle(저역 통과, 제압) → master(음량) → 압축기 → 안전 리미터 → 출력
 //   초음속 '딱'(crack) 버스 ─────────────────────────────────────────────→ master   (먹먹함을 건너뜀)
 // '딱' 소리는 제압의 원인이라 먹먹해진 세상 속에서도 날카롭게 들려야 한다.
+// 4단계: 위치가 있는 소리(o.pos)는 HRTF PannerNode 로 — 듣는 사람(listener: 카메라 위치·yaw) 기준 국소 좌표에 놓는다
+//   (거리 감쇠·숲 흡수는 각 소리가 직접 계산하므로 패너의 거리 감쇠는 끔: rolloffFactor 0). 앞·뒤·위아래가 구분된다.
+//   AudioListener 는 원점에 고정 — 소리를 만들 때 한 번 위치를 잡는다 (총성·발소리·고함은 짧아서 충분).
 import { CONFIG } from '../config.js';
 
 // 먹먹함 필터의 Q (저역/고역 통과에서 Web Audio 의 Q 는 dB 단위 공진값 — -3.01dB = 버터워스, 차단 주파수 근처가 솟지 않음)
@@ -48,6 +51,8 @@ export class AudioEngine {
     this.buffers = {};
     this.muffleAmount = 0;
     this._onReady = [];
+    this.listener = null;       // { x, y, z, yaw } — 게임이 매 프레임 (HRTF 위치 기준)
+    this.hrtf = CONFIG.audio.hrtf !== false;
   }
 
   /**
@@ -264,13 +269,45 @@ export class AudioEngine {
       s.gain.value = o.send;
       node.connect(s).connect(this.reverbSend);   // 팬 앞에서 보냄 — 잔향은 사방에서 온다
     }
-    // pan 이 주어지면 0 이어도 패너를 둔다 (원래 동작: 모노 입력이 등전력 팬으로 -3dB — 1단계 소리 크기 유지)
-    if (o.pan !== undefined && ctx.createStereoPanner) {
+    if (o.pos && this.listener && this.hrtf && ctx.createPanner) {
+      // 4단계: 3D 위치 → HRTF (앞뒤·위아래까지)
+      node = node.connect(this.panner(o.pos));
+    } else if (o.pan !== undefined && Number.isFinite(o.pan) && ctx.createStereoPanner) {
+      // pan 이 주어지면 0 이어도 패너를 둔다 (원래 동작: 모노 입력이 등전력 팬으로 -3dB — 1단계 소리 크기 유지)
       const p = ctx.createStereoPanner();
       p.pan.value = o.pan;
       node = node.connect(p);
     }
     node.connect(o.out || this.master);
+  }
+
+  /** HRTF 패너 (거리 감쇠 없음 — 방향만), 월드 위치 pos 를 듣는 사람 기준으로 */
+  panner(pos) {
+    const p = this.ctx.createPanner();
+    p.panningModel = 'HRTF';
+    p.distanceModel = 'linear';
+    p.rolloffFactor = 0;
+    p.refDistance = 1;
+    p.maxDistance = 100000;
+    this.placePanner(p, pos);
+    return p;
+  }
+
+  /**
+   * 패너 위치 = 듣는 사람 국소 좌표 (Web Audio 기본 듣는 사람: 앞 −Z, 위 +Y, 오른쪽 +X).
+   * yaw 규약: 0 = −Z, + 면 왼쪽으로 돎 → 오른쪽 = (cos yaw, 0, −sin yaw), 앞 = (−sin yaw, 0, −cos yaw)
+   */
+  placePanner(p, pos) {
+    const L = this.listener;
+    if (!L) return;
+    const dx = pos.x - L.x, dy = (pos.y ?? L.y) - L.y, dz = pos.z - L.z;
+    const c = Math.cos(L.yaw), s = Math.sin(L.yaw);
+    const right = dx * c - dz * s, front = -dx * s - dz * c;
+    const x = right, y = dy, z = -front;
+    if (p.positionX) {
+      const t = this.ctx.currentTime;
+      p.positionX.setValueAtTime(x, t); p.positionY.setValueAtTime(y, t); p.positionZ.setValueAtTime(z, t);
+    } else p.setPosition(x, y, z);
   }
 
   /**

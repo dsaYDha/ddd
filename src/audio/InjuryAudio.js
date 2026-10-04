@@ -3,6 +3,8 @@
 //  · 사람 개체: 맞는 소리는 WeaponAudio.impact('body'), 여기서는 신음·거친 숨·기침 (거리·방향·숲 흡수)
 //  · 자가 처치: 붕대 포장 뜯기 → 감는 천 소리 (진행 중 틱), 지혈대 찍찍이 → 끈 당김 → 막대 돌리는 딸깍
 //  목소리 = 톱니파 성대음 → 모음 포먼트(대역 통과 2~3개) + 숨 잡음. 남성 기본 주파수 95~150Hz.
+//  4단계: 적 병사 고함 (shout) — 실제 언어가 아닌 짧은 외침 음절 (자음 잡음 + 높여 지른 모음). 종류마다 음절 수·억양이 달라
+//   '적 발견'·'사격'·'측면'·'부상자' 등을 소리 모양으로 구분하고, 위치(HRTF)가 곧 단서. 병사마다 목소리 높이·포먼트가 다름.
 import { CONFIG } from '../config.js';
 
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -13,6 +15,23 @@ const VOWELS = {
   uh: [[500, 1], [1000, 0.5], [2400, 0.12]],
   ah: [[720, 1], [1150, 0.6], [2500, 0.15]],
   oh: [[480, 1], [820, 0.55], [2450, 0.1]],
+  eh: [[560, 1], [1750, 0.45], [2500, 0.15]],
+  ee: [[320, 1], [2150, 0.4], [2900, 0.15]],
+};
+// 고함: 멀리까지 (작게 줄어듦), 숲이 고역을 먹음
+const SHOUT_FAR = { fall: 0.045, lpHz: 12000, lpRefM: 8, lpExp: 0.6, minLp: 700, send: 0.2, farSend: 0.5, farM: 60 };
+// 고함 종류 → 음절 [자음, 모음, 길이 s, 음높이 시작 배율, 끝 배율] (자음: k t p b h 또는 '' = 바로 모음)
+const SHOUTS = {
+  contact: [['k', 'ah', 0.2, 1.25, 1.45], ['t', 'oh', 0.3, 1.45, 1.05]],
+  fire: [['', 'ah', 0.26, 1.5, 1.2]],
+  flank: [['h', 'ah', 0.16, 1.2, 1.3], ['t', 'ah', 0.14, 1.3, 1.25], ['k', 'oh', 0.26, 1.3, 1.0]],
+  cover: [['k', 'oh', 0.18, 1.2, 1.3], ['p', 'ah', 0.24, 1.3, 1.0]],
+  manDown: [['', 'ah', 0.38, 1.35, 1.15], ['h', 'oh', 0.42, 1.2, 0.9]],
+  confused: [['h', 'eh', 0.22, 1.1, 1.35], ['', 'ah', 0.16, 1.2, 1.1], ['k', 'eh', 0.3, 1.1, 1.45]],
+  retreat: [['b', 'ah', 0.2, 1.3, 1.4], ['k', 'ah', 0.34, 1.4, 1.0]],
+  reload: [['h', 'eh', 0.2, 1.15, 1.0]],
+  help: [['', 'ah', 0.75, 1.3, 1.05], ['h', 'ah', 0.6, 1.2, 0.95]],
+  scream: [['', 'ah', 1.0, 2.3, 1.6]],
 };
 
 export class InjuryAudio {
@@ -82,13 +101,13 @@ export class InjuryAudio {
   // 사람 개체 (거리·방향)
   // =================================================================
   /** kind: 'moan'|'breath'|'cough', spatial {distance, pan, behind}, stage: 'normal'|'weak'|'faint' */
-  vocal(kind, { distance = 10, pan = 0, behind = false, stage = 'normal' } = {}) {
+  vocal(kind, { distance = 10, pan = 0, behind = false, stage = 'normal', pos = null } = {}) {
     if (!this.ok) return;
     const e = this.e;
     const d = Math.max(0.5, distance);
     if (d > 80) return;
     const lp = Math.max(FAR.minLp, FAR.lpHz * Math.pow(FAR.lpRefM / Math.max(FAR.lpRefM, d), FAR.lpExp) * (behind ? 0.75 : 1));
-    const v = e.voice({ gain: 1 / (1 + d * FAR.fall), lowpass: lp, stages: 2, pan, out: e.buses.ambience, send: FAR.send + FAR.farSend * Math.min(1, d / FAR.farM) });
+    const v = e.voice({ gain: 1 / (1 + d * FAR.fall), lowpass: lp, stages: 2, pan, pos, out: e.buses.ambience, send: FAR.send + FAR.farSend * Math.min(1, d / FAR.farM) });
     const t = e.now + 0.01 + d / CONFIG.ballistics.speedOfSound;
     const weak = stage === 'faint' ? 0.55 : stage === 'weak' ? 0.8 : 1;
     if (kind === 'moan') {
@@ -113,19 +132,56 @@ export class InjuryAudio {
   }
 
   /** 몸이 땅에 쓰러지는 소리 (delay 초 뒤): 둔한 쿵 + 낙엽·풀 바스락 + 장비 덜컥 */
-  bodyFall({ distance = 10, pan = 0, behind = false, delay = 0.5, heavy = true } = {}) {
+  bodyFall({ distance = 10, pan = 0, behind = false, delay = 0.5, heavy = true, pos = null } = {}) {
     if (!this.ok) return;
     const e = this.e;
     const d = Math.max(0.5, distance);
     if (d > 90) return;
     const lp = Math.max(FAR.minLp, FAR.lpHz * Math.pow(FAR.lpRefM / Math.max(FAR.lpRefM, d), FAR.lpExp) * (behind ? 0.75 : 1));
-    const v = e.voice({ gain: 1 / (1 + d * FAR.fall), lowpass: lp, stages: 2, pan, out: e.buses.ambience, send: FAR.send + FAR.farSend * Math.min(1, d / FAR.farM) });
+    const v = e.voice({ gain: 1 / (1 + d * FAR.fall), lowpass: lp, stages: 2, pan, pos, out: e.buses.ambience, send: FAR.send + FAR.farSend * Math.min(1, d / FAR.farM) });
     const t = e.now + delay + d / CONFIG.ballistics.speedOfSound;
     const k = heavy ? 1 : 0.6;
     e.tone({ t, freq: 80, freqEnd: 42, dur: 0.22, gain: 0.55 * k, attack: 0.004, release: 0.2, out: v });
     e.burst({ t, dur: 0.18, attack: 0.004, gain: 0.4 * k, filter: 'lowpass', freq: 600, q: 0.8, noise: 'brown', out: v });
     e.burst({ t: t + 0.01, dur: 0.45, attack: 0.02, gain: 0.16 * k, filter: 'bandpass', freq: 2800, q: 0.8, out: v });
     e.burst({ t: t + 0.06, dur: 0.02, attack: 0.001, gain: 0.12 * k, filter: 'bandpass', freq: 1900, q: 6, out: v });   // 장비
+  }
+
+  /**
+   * 적 병사 고함 (분대 의사소통·비명·도움 요청). kind: SHOUTS 의 키, voice: { f0 (Hz), formant (배율) } — 병사마다 다름.
+   * 거리/음속 늦게, 멀수록 작고 어둡게, 위치(pos)는 HRTF. weak: 부상으로 약해진 목소리 (0~1, 1 = 보통)
+   */
+  shout(kind, { distance = 20, pan = 0, behind = false, pos = null, voice = null, weak = 1 } = {}) {
+    if (!this.ok) return;
+    const pat = SHOUTS[kind];
+    if (!pat) return;
+    const e = this.e, F = SHOUT_FAR;
+    const d = Math.max(0.5, distance);
+    if (d > 150) return;
+    const lp = Math.max(F.minLp, F.lpHz * Math.pow(F.lpRefM / Math.max(F.lpRefM, d), F.lpExp) * (behind ? 0.8 : 1));
+    const v = e.voice({ gain: 1 / (1 + d * F.fall), lowpass: lp, stages: 2, pan, pos, out: e.buses.ambience, send: F.send + F.farSend * Math.min(1, d / F.farM) });
+    const f0 = (voice?.f0 ?? rand(105, 145)) * rand(0.97, 1.03);
+    const fm = voice?.formant ?? 1;
+    const loud = (kind === 'help' ? 0.42 : kind === 'scream' ? 0.6 : 0.5) * weak;
+    let t = e.now + 0.01 + d / CONFIG.ballistics.speedOfSound;
+    for (const [cons, vowel, dur, p0, p1] of pat) {
+      if (cons) t = this._consonant(t, cons, loud, v);
+      const len = dur * rand(0.9, 1.12);
+      this._voice({ t, dur: len, f0: f0 * p0, f1: f0 * p1, peak: f0 * Math.max(p0, p1) * 1.04, vowel, gain: loud, breath: kind === 'scream' ? 0.2 : 0.08, out: v, formant: fm, shout: true });
+      t += len + rand(0.04, 0.09);
+    }
+  }
+
+  /** 자음: 파열음(k t p b) = 짧은 잡음 터짐, h = 거친 숨 — 그다음 모음이 이어지는 시각을 돌려줌 */
+  _consonant(t, c, g, out) {
+    const e = this.e;
+    if (c === 'h') {
+      e.burst({ t, dur: 0.07, attack: 0.02, gain: g * 0.35, filter: 'bandpass', freq: 1600, q: 0.8, noise: 'pink', out });
+      return t + 0.06;
+    }
+    const freq = c === 'k' ? 2400 : c === 't' ? 4200 : c === 'p' ? 900 : 600;
+    e.burst({ t, dur: c === 'b' ? 0.012 : 0.022, attack: 0.001, gain: g * (c === 'b' ? 0.4 : 0.55), filter: 'bandpass', freq, q: 1.4, out });
+    return t + (c === 'b' ? 0.015 : 0.035);
   }
 
   // =================================================================
@@ -214,8 +270,9 @@ export class InjuryAudio {
     for (const [f, a] of VOWELS[o.vowel] || VOWELS.uh) {
       const bp = ctx.createBiquadFilter();
       bp.type = 'bandpass';
-      bp.frequency.value = f * rand(0.95, 1.05);
-      bp.Q.value = 6;
+      // 지르는 소리는 첫 포먼트가 올라감 (입을 크게 벌림)
+      bp.frequency.value = f * (o.formant ?? 1) * (o.shout && f < 900 ? 1.12 : 1) * rand(0.95, 1.05);
+      bp.Q.value = o.shout ? 5 : 6;
       const g = ctx.createGain();
       g.gain.value = a * 2.2;
       osc.connect(bp).connect(g).connect(sum);

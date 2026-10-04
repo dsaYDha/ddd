@@ -897,6 +897,11 @@ export const CONFIG = {
     // 제압 먹먹함: setMuffle(0~1) → 저역 통과 maxHz → minHz (지수 보간), 세상 소리 크기 ×(1 - duck×양)
     //  제압 효과 muffle 0.55(수치 100) ≈ 2.2kHz 차단 — '약간 먹먹함'
     muffle: { maxHz: 20000, minHz: 350, duck: 0.25, smoothing: 0.08 },
+    // 4단계: 위치가 있는 소리는 HRTF 3D 음향 (앞뒤·위아래 구분). 끄면 1~3단계처럼 좌우 팬
+    hrtf: true,
+    // 적 소리: 총성은 사이에 식생이 빽빽할수록 (시야 투과율 0 쪽) 크기 ×(1 − vegDamp), 저역 통과 ×(1 − vegLowpass) 더 줄어듦.
+    //  발소리·장전 소리는 이 거리 (m) 안에서만 만든다 (멀면 들리지도 않고 노드만 씀)
+    enemy: { vegDamp: 0.45, vegLowpass: 0.6, vegCacheSec: 0.4, footstepRange: 40, mechRange: 30, vocalRange: 90 },
   },
 
   // 조작 키 (KeyboardEvent.code). Ctrl은 브라우저 단축키와 충돌하므로 쓰지 않는다.

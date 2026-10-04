@@ -6,6 +6,9 @@
 //  3단계: 플레이어 부상(Injuries — F8 표적·4단계 적과 같은 컴포넌트). 입력 잠금(충격·사망) → 이동 → 부상 갱신·효과 적용
 //  (이동 제한·조준 배율·무기 배율) → 전투. 표현: 화면 충격·이명·순간 흐림·넘어지는 시점·심박·터널 시야·앓는 숨,
 //  혈액 60% 미만 회색·흐림·먼 소리, 사망 화면 (Enter 다시 시작). H 붕대 · G 지혈대 · F 총 줍기 · F9 피격 테스트 · F6 대퇴 부상.
+//  4단계: 적 병사 AI (ai/EnemyManager — 같은 이동·사격·제압·부상 규칙), 화면 모델(SoldierMeshes), 동물 정적(Wildlife → Ambience),
+//  위치 소리는 HRTF (AudioEngine.listener = 카메라). 프레임 순서: … combat.update → 표적·F7 → 적 (감지·판단·이동·사격) → 플레이어 사수 …
+//  F4 적 생성 메뉴 · F2 AI 디버그 · F9 무적 켜기/끄기.
 import * as THREE from 'three';
 import { CONFIG } from '../config.js';
 import { Settings } from './Settings.js';
@@ -24,6 +27,10 @@ import * as PG from '../render/PlantGeometry.js';
 import { WeaponView } from '../render/WeaponView.js';
 import { CombatFX } from '../render/CombatFX.js';
 import { TargetMeshes } from '../render/TargetMesh.js';
+import { SoldierMeshes, buildSoldierGeometry } from '../render/SoldierMesh.js';
+import { NavGrid } from '../ai/NavGrid.js';
+import { EnemyManager } from '../ai/EnemyManager.js';
+import { AIDebug } from '../ui/AIDebug.js';
 import { CombatSystem } from '../combat/CombatSystem.js';
 import { BulletWorld } from '../combat/BulletWorld.js';
 import { Shooter } from '../combat/Shooter.js';
@@ -70,8 +77,11 @@ const HIT_TESTS = [
   { label: '저속 탄 (관통 뒤 30%) → 대퇴: 스침으로', kind: 'thighR', opts: { retained: 0.3, forceArterial: false } },
   { label: '스침 — 가슴 옆 1cm', kind: 'graze', opts: { part: 'upperChest' } },
   { label: '스침 — 머리 옆 1cm', kind: 'graze', opts: { part: 'head' } },
+  { label: '무적 켜기 / 끄기 (4단계 테스트 — 맞아도 다치지 않음)', kind: 'invulnerable' },
   { label: '부상 초기화 (테스트 전용 — 게임에선 치유 없음)', kind: 'reset' },
 ];
+// F4 적 생성 메뉴: 거리 후보 (m)·인원 범위 — CONFIG.ai.spawn
+const SPAWN_KINDS = [{ key: 'patrol', label: '순찰 분대' }, { key: 'ambush', label: '매복조 (앞쪽 오솔길)' }];
 const AID_LABEL = { bandage: '붕대', tourniquet: '지혈대' };
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
@@ -156,6 +166,23 @@ export class Game {
     this._supFx = this.playerPerson.suppression.effects({});
     this._firedQueue = [];
 
+    // ---- 4단계: 적 AI — 길찾기 격자 (지형 비용·오솔길·은폐), 감지·판단·분대, 동물 활동도
+    this.menu.setProgress(0.73, 'AI 길찾기 격자 준비 중…');
+    await nextFrame();
+    this.nav = new NavGrid(this.query, data.layout);
+    this.enemies = new EnemyManager({ query: this.query, combat: this.combat, noise: this.noise, layout: data.layout, nav: this.nav });
+    const inj0 = this.injuries;
+    this.enemies.setTarget({
+      person: this.playerPerson, motor: this.motor, injuries: inj0,
+      get alive() { return !inj0.dead; },
+      exposure: () => this.exposure.value,
+    });
+    this._spawn = { open: false, index: 0, kind: 0, size: 5, mg: true, dist: 1 };
+    this._aiMs = 0;
+    this._aiRays = { last: 0, perFrame: 0 };
+    this._listener = { x: st.x, y: 0, z: st.z, yaw: st.yaw };
+    this._vegCache = new Map();
+
     // ---- 대기
     this.menu.setProgress(0.75, '대기·빛 설정 중…');
     await nextFrame();
@@ -177,6 +204,8 @@ export class Game {
     this.motor.on('rustle', (e) => this.footsteps.rustle(e));
     this.weaponAudio = new WeaponAudio(this.audio);   // 파형 은행은 audio.init (시작 클릭) 때 만들어진다
     this.injuryAudio = new InjuryAudio(this.audio);
+    this.ambience.setWildlife(this.enemies.wildlife);   // 4단계: 움직이는 사람·총성 주변 동물 정적
+    this.audio.listener = this._listener;
 
     // ---- 사격 화면·효과 — 로딩 중에 만들어 아래 셰이더 미리 컴파일에 포함 (첫 발·첫 F8 에서 끊기지 않게)
     this.menu.setProgress(0.8, '무기 준비 중…');
@@ -187,6 +216,7 @@ export class Game {
     this.combatFX = new CombatFX(this.scene, { textures: this.world.textures, quality: qKey, groundHeight: (x, z) => this.query.getTerrainHeight(x, z) });
     this.combatFX.setTracers(this.combat.ballistics.projectiles);
     this.targetMeshes = new TargetMeshes(this.scene, { leafMaterial: this.world.materials.leaves, stemMaterial: this.world.materials.stem, buildShrub: PG.buildShrub });
+    this.soldierMeshes = new SoldierMeshes(this.scene, { query: this.query });
     this._vmLight = {
       sunColor: new THREE.Color(), sunDir: new THREE.Vector3(0, 1, 0), skyColor: new THREE.Color(), groundColor: new THREE.Color(),
       hemiIntensity: 1, shade: -1, sunVisible: 1, flash: 0,
@@ -194,6 +224,7 @@ export class Game {
     this._mz = new THREE.Vector3();
     this._md = new THREE.Vector3();
     this._wireCombat();
+    this._wireEnemies();
     this._resetInjuryState();
 
     // ---- UI
@@ -201,6 +232,7 @@ export class Game {
     // 약한 비네트 (색보정의 일부 — config.lighting.vignette)
     this.uiEl.insertAdjacentHTML('afterbegin', `<div id="grade-vignette" style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at center, rgba(0,0,0,0) 58%, rgba(0,0,0,${CONFIG.lighting.vignette}) 100%)"></div>`);
     this.debug = new DebugOverlay(this.uiEl);
+    this.aiDebug = new AIDebug(this.scene, this.uiEl);
     this.controller.on('toast', (msg) => this.hud.toast(msg));
     this._wireInjuries();
     this._buildNoiseRing();
@@ -239,6 +271,15 @@ export class Game {
     warm.frustumCulled = false;
     warm.position.set(this.motor.position.x, this.motor.position.y - 3, this.motor.position.z);
     this.scene.add(warm);
+    // 4단계 병사·구덩이 재질도 (위장 무늬 셰이더) — 첫 적을 부를 때 끊기지 않게
+    const warmS = new THREE.Mesh(buildSoldierGeometry({ x: 0, y: 0, z: 0, yaw: 0, stance: 'stand', stanceFrom: 'stand', stanceProgress: 1, arms: 'rifle' }), this.soldierMeshes.material);
+    const warmP = new THREE.Mesh(this.soldierMeshes._pitGeo, this.soldierMeshes.pitMaterial);
+    for (const w of [warmS, warmP]) {
+      w.castShadow = w.receiveShadow = true;
+      w.frustumCulled = false;
+      w.position.set(this.motor.position.x, this.motor.position.y - 3, this.motor.position.z);
+      this.scene.add(w);
+    }
     for (const t of [this.combatFX.fxAtlas?.texture, this.weaponView.textures?.flash]) if (t) try { renderer.initTexture(t); } catch { /* 일부 환경 미지원 */ }
     try {
       // 병렬 컴파일 확장이 없으면 compileAsync가 경고를 내므로 동기 컴파일 사용
@@ -248,6 +289,8 @@ export class Game {
     this.renderer.render(this.scene, this.camera);
     this.scene.remove(warm);
     warm.geometry.dispose();
+    this.scene.remove(warmS); this.scene.remove(warmP);
+    warmS.geometry.dispose();
     this.menu.setProgress(1, '준비 완료');
     this.menu.ready();
     this.menu.sync({ debug: this.debug.visible });
@@ -315,6 +358,11 @@ export class Game {
   /** F9·F6 피격 테스트: 지금 자세의 판정 캡슐에 실제 탄과 같은 명중을 만들어 같은 경로로 적용 */
   testHit(kind, opts = {}) {
     if (kind === 'reset') { this._resetInjuries(); this.hud.toast('부상 초기화 (테스트)'); return null; }
+    if (kind === 'invulnerable') {
+      this.injuries.invulnerable = !this.injuries.invulnerable;
+      this.hud.toast(this.injuries.invulnerable ? '무적 켜짐 (테스트) — 맞아도 다치지 않음' : '무적 꺼짐', 2);
+      return null;
+    }
     if (this.injuries.dead) return null;
     this.playerPerson.refresh();
     const hit = makeTestHit(this.playerPerson, kind, opts);
@@ -332,6 +380,10 @@ export class Game {
     const m = this.motor;
     this.targetRange.clear();
     if (this.suppressionTest.active) this.suppressionTest.stop('restart');
+    this.enemies.clear();
+    this.enemies.wildlife.reset();
+    this.soldierMeshes.clear();
+    this.aiDebug.clear();
     this.combat.reset();
     this.combatFX.clear();
     this._resetInjuries();
@@ -392,9 +444,22 @@ export class Game {
       if (!this.paused && e.code === K.restart && J.deathShown) this.restart();
       return;
     }
+    // 4단계: F2 AI 디버그, F4 적 생성 메뉴 (열려 있는 동안 ↑↓·←→·Enter)
+    if (!this.paused && e.code === K.aiDebug) {
+      this.hud.toast(this.aiDebug.toggle() ? 'AI 디버그 켜짐 (F2)' : 'AI 디버그 꺼짐', 1.2);
+      return;
+    }
+    if (!this.paused && e.code === K.spawnMenu) {
+      this._spawn.open = !this._spawn.open;
+      if (this._spawn.open && J.hitTest) { J.hitTest = false; this.hud.setHitTest(null); }
+      this._showSpawnMenu();
+      return;
+    }
+    if (this._spawn.open && !this.paused && this._spawnKey(e.code)) return;
     // F9 피격 테스트 메뉴 (열려 있는 동안 ↑↓·Enter)
     if (!this.paused && e.code === K.hitTest) {
       J.hitTest = !J.hitTest;
+      if (J.hitTest && this._spawn.open) { this._spawn.open = false; this._showSpawnMenu(); }
       this.hud.setHitTest(J.hitTest ? HIT_TESTS : null, J.hitIndex);
       return;
     }
@@ -463,6 +528,9 @@ export class Game {
     }
     const dt = Math.min(0.1, this.timer.getDelta());
     const m = this.motor;
+    // 4단계 HRTF 듣는 사람 = 카메라 (지난 프레임 끝 위치 — 이번 프레임에 나는 소리들의 기준)
+    const L = this._listener, cp = this.camera.position;
+    L.x = cp.x; L.y = cp.y; L.z = cp.z; L.yaw = this.controller.yaw;
     // 그리기 통계: 지난 프레임의 월드 + 화면 모델 합계를 기억하고 지움 (renderer.info.autoReset = false)
     const ri = this.renderer.info.render;
     this._renderStats.calls = ri.calls;
@@ -485,6 +553,10 @@ export class Game {
     this.combat.update(dt);
     this.targetRange.update(dt);
     this.suppressionTest.update(dt);
+    // 4단계: 적 (감지 → 소리 → 분대 → 병사 판단·이동·사격). 시간은 F3 에 (구조적 예산: 레이·경로·판단 분산)
+    const t0 = performance.now();
+    this.enemies.update(dt);
+    this._aiMs += (performance.now() - t0 - this._aiMs) * 0.1;
     const sup = this._updateShooter(dt);
     const sh = this.shooter;
 
@@ -510,6 +582,8 @@ export class Game {
     }
     this.combatFX.update(dt, this.camera, {});
     this.targetMeshes.update(dt);
+    this.soldierMeshes.update(this.enemies.soldiers, this.enemies.pits);
+    this._pushPlantsBySoldiers();
     // 총구 화염 빛: 월드에 점광원을 더하지 않고 반구광을 잠깐 밝힘 (Atmosphere 가 매 프레임 값을 다시 정하므로 누적되지 않음)
     const flash = this.combatFX.flash;
     if (flash > 0) this.atmosphere.hemi.intensity = this.atmosphere.state.hemiIntensity * (1 + 0.8 * flash);
@@ -547,6 +621,10 @@ export class Game {
       this._rayTimer -= dt;
       if (this._rayTimer <= 0) { this._rayTimer = 0.125; this._debugRays(); }
     }
+    const st = this.enemies.stats;
+    this._aiRays.perFrame += ((st.rays - this._aiRays.last) - this._aiRays.perFrame) * 0.05;
+    this._aiRays.last = st.rays;
+    this.aiDebug.update(this.enemies.soldiers, this.camera, this.enemies.time);
     this.debug.update(dt, {
       motor: m, yaw: this.controller.yaw, exposure: this.exposure, rays: this.rays,
       noiseMask: this.noise.maskFactor(), wetness: this.atmosphere.wetness, rain: this.atmosphere.rainIntensity,
@@ -554,6 +632,10 @@ export class Game {
       render: this._renderStats, veg: this.world.stats, testPoints: this.data.testPoints,
       combat: { shooter: sh, stats: this.combat.stats(this.playerPerson), suppression: this.playerPerson.suppression, stress: m.stress },
       injury: inj,
+      ai: {
+        manager: this.enemies, raysPerFrame: this._aiRays.perFrame, ms: this._aiMs, invulnerable: inj.invulnerable,
+        wildlife: this.enemies.wildlife.around(m.position.x, m.position.z, 30),
+      },
     });
 
     this.renderer.render(this.scene, this.camera);
@@ -711,7 +793,7 @@ export class Game {
     c.on('flyby', (e) => {
       if (e.person !== this.playerPerson) return;
       const a = spatial(e.point);
-      wa.crack({ missDistance: e.distance, pan: a.pan });
+      wa.crack({ missDistance: e.distance, pan: a.pan, pos: e.point, gain: e.projectile?.weapon?.sound?.crack ?? 1 });
       const shake = CONFIG.suppression.effects.shakeDeg * Math.min(1, 0.6 / Math.max(0.3, e.distance));
       this.rig.addShake(shake);
       sh.aim.addShake(shake);
@@ -756,6 +838,163 @@ export class Game {
   _syncHitLog() {
     const tr = this.targetRange;
     this.hud?.setHitLog(tr.active && this.debug?.visible ? tr.log : null);
+  }
+
+  // =================================================================
+  // 4단계: 적 병사 — 소리(HRTF 위치)·총구 화염·피·쓰러짐
+  // =================================================================
+  _wireEnemies() {
+    const em = this.enemies, wa = this.weaponAudio, ia = this.injuryAudio, fs = this.footsteps, fx = this.combatFX;
+    const EN = CONFIG.audio.enemy;
+    const sp = {};
+    const spatial = (p) => WeaponAudio.spatial(this.camera.position, this.controller.yaw, p, sp);
+    const at = (p, dy = 0) => ({ x: p.x, y: p.y + dy, z: p.z });
+    // 적 총성: 무기마다 다른 소리 (5.56 소총은 높고 짧게, 경기관총은 낮고 무겁게) + 사이 식생만큼 더 작고 어둡게 + 먼 총구 화염
+    this.combat.on('shot', (e) => {
+      if (e.shooter?.faction !== 'enemy') return;
+      const a = spatial(e.origin);
+      wa.shot({ own: false, distance: a.distance, pan: a.pan, behind: a.behind, pos: at(e.origin), profile: e.weapon?.sound, veg: this._vegBetween(e.shooter, e.origin, a.distance) });
+      fx.muzzle({ position: e.origin, dir: e.dir, own: false });
+    });
+    // 고함 (분대 의사소통·비명·도움 요청) — 목소리 높이는 병사마다
+    em.on('shout', (e) => {
+      const s = e.soldier, a = spatial(e.position);
+      const weak = s.alive ? Math.max(0.45, Math.min(1, s.injuries.blood / 80)) : 0.5;
+      ia.shout(e.kind, { distance: a.distance, pan: a.pan, behind: a.behind, pos: at(e.position), voice: this._voiceOf(s), weak });
+    });
+    // 탄창 교환·노리쇠 (가까울 때만)
+    em.on('mech', (e) => {
+      const p = e.soldier.eye, a = spatial(p);
+      if (a.distance > EN.mechRange) return;
+      wa.mech(MECH_SOUND[e.kind] ?? e.kind, { pos: at(p, -0.25), distance: a.distance });
+    });
+    // 발소리·헤치는 소리
+    em.on('footstep', (e) => {
+      const p = e.soldier.motor.position, a = spatial(p);
+      if (a.distance > EN.footstepRange) return;
+      fs.play(e.evt, { distance: a.distance, pan: a.pan, pos: at(p, 0.1) });
+    });
+    em.on('rustle', (e) => {
+      const p = e.soldier.motor.position, a = spatial(p);
+      if (a.distance > EN.footstepRange) return;
+      fs.rustle(e.evt, { distance: a.distance, pan: a.pan, pos: at(p, 0.6) });
+    });
+    // 부상병: 신음·거친 숨·기침, 땅 핏자국, 쓰러지는 소리
+    em.on('vocal', (e) => {
+      const p = at(e.position ?? e.soldier.motor.position, 0.4), a = spatial(p);
+      if (a.distance > EN.vocalRange) return;
+      ia.vocal(e.kind, { distance: a.distance, pan: a.pan, behind: a.behind, stage: e.stage, pos: p });
+    });
+    em.on('bleed', (e) => fx.bloodStain(e.position, 0.6 + Math.min(1.2, (e.rate ?? 0) / 15)));
+    em.on('fall', (e) => {
+      const p = at(e.soldier.motor.position, 0.4), a = spatial(p);
+      const E = CONFIG.injury.entity;
+      ia.bodyFall({ distance: a.distance, pan: a.pan, behind: a.behind, pos: p, delay: e.kind === 'collapse' ? E.fallTime * 0.85 : 0.35, heavy: e.kind !== 'sit' });
+    });
+    em.on('clear', () => this._vegCache.clear());
+  }
+
+  /** 병사 목소리 (고함 합성): 기본 높이·포먼트 배율 */
+  _voiceOf(s) {
+    const v = s.voice ?? 0.5;
+    return { f0: 102 + 46 * v, formant: 0.93 + 0.14 * (1 - v) };
+  }
+
+  /**
+   * 총성이 지나오는 식생 (0 = 트임, 1 = 빽빽): 총구 → 듣는 사람 시야 투과율. 같은 사수는 vegCacheSec 동안 재사용
+   * (기관총 연발마다 레이를 쏘지 않게)
+   */
+  _vegBetween(shooter, origin, distance) {
+    const EN = CONFIG.audio.enemy, now = this.enemies.time;
+    const c = this._vegCache.get(shooter);
+    if (c && now - c.t < EN.vegCacheSec) return c.v;
+    const cam = this.camera.position;
+    const dx = cam.x - origin.x, dy = cam.y - origin.y, dz = cam.z - origin.z;
+    const L = Math.min(150, distance || Math.hypot(dx, dy, dz));
+    const r = this.query.raycastWorld(origin, { x: dx, y: dy, z: dz }, Math.max(0.1, L - 0.3), 'vision');
+    const v = r.hit && r.object?.type === 'terrain' ? 1 : 1 - (r.hit ? 0 : r.transmittance);
+    this._vegCache.set(shooter, { t: now, v });
+    return v;
+  }
+
+  /** 식물 밀림: 카메라에 가장 가까운 살아 있는 병사 3명 (셰이더 uPush 1~3번 칸) */
+  _pushPlantsBySoldiers() {
+    const slots = shared.uPush.value, cam = this.camera.position, R = CONFIG.interaction.pushRadius;
+    const near = this._pushNear || (this._pushNear = []);
+    near.length = 0;
+    for (const s of this.enemies.soldiers) {
+      if (!s.alive || s.inPit) continue;
+      const p = s.motor.position;
+      const d = (p.x - cam.x) ** 2 + (p.z - cam.z) ** 2;
+      if (d > 60 * 60) continue;
+      near.push({ s, d });
+    }
+    near.sort((a, b) => a.d - b.d);
+    for (let i = 1; i <= 3; i++) {
+      const n = near[i - 1];
+      if (!n) { slots[i].set(0, -1e4, 0, 0); continue; }
+      const p = n.s.motor.position;
+      slots[i].set(p.x, p.y, p.z, R * (n.s.motor.stance === 'prone' ? 1.25 : 1));
+    }
+  }
+
+  // ---- F4 적 생성 메뉴 ------------------------------------------------
+  _spawnItems() {
+    const S = this._spawn, D = CONFIG.ai.spawn.distances;
+    return [
+      { label: '종류', value: SPAWN_KINDS[S.kind].label },
+      { label: '인원', value: `${S.size}명` },
+      { label: '경기관총 포함', value: S.mg ? '예' : '아니오' },
+      { label: '거리', value: `${D[S.dist]} m` },
+      { label: '▷ 생성' },
+      { label: '모두 제거' },
+    ];
+  }
+
+  _showSpawnMenu() {
+    this.hud.setSpawnMenu(this._spawn.open ? this._spawnItems() : null, this._spawn.index);
+  }
+
+  /** 메뉴가 열려 있을 때의 키 — 처리했으면 true */
+  _spawnKey(code) {
+    const S = this._spawn, items = this._spawnItems();
+    const sizes = CONFIG.ai.spawn.sizes, D = CONFIG.ai.spawn.distances;
+    const change = (dir) => {
+      if (S.index === 0) S.kind = (S.kind + dir + SPAWN_KINDS.length) % SPAWN_KINDS.length;
+      else if (S.index === 1) S.size = Math.max(Math.min(...sizes) - 1, Math.min(Math.max(...sizes), S.size + dir));
+      else if (S.index === 2) S.mg = !S.mg;
+      else if (S.index === 3) S.dist = (S.dist + dir + D.length) % D.length;
+      else return false;
+      return true;
+    };
+    if (code === 'ArrowUp' || code === 'ArrowDown') {
+      S.index = (S.index + (code === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
+    } else if (code === 'ArrowLeft' || code === 'ArrowRight') {
+      if (!change(code === 'ArrowLeft' ? -1 : 1)) return true;
+    } else if (code === 'Enter') {
+      if (S.index === 4) this._doSpawn();
+      else if (S.index === 5) { this.enemies.clear(); this.soldierMeshes.clear(); this.aiDebug.clear(); this.hud.toast('적 모두 제거'); }
+      else change(1);
+    } else return false;
+    this._showSpawnMenu();
+    return true;
+  }
+
+  _doSpawn() {
+    const S = this._spawn, em = this.enemies, m = this.motor;
+    const d = CONFIG.ai.spawn.distances[S.dist];
+    const left = CONFIG.ai.maxActive - em.active.length;
+    if (left <= 0) { this.hud.toast(`적이 이미 ${CONFIG.ai.maxActive}명 — 더 부를 수 없음`, 2); return; }
+    const near = { x: m.position.x, z: m.position.z };
+    const kind = SPAWN_KINDS[S.kind].key;
+    const sq = kind === 'patrol'
+      ? em.spawnPatrol({ near, distance: d, size: S.size, mg: S.mg })
+      : em.spawnAmbush({ near, yaw: this.controller.yaw, distance: d, size: S.size, mg: S.mg });
+    if (!sq) { this.hud.toast('생성할 자리를 찾지 못함', 2); return; }
+    const n = sq.members.length;
+    const mg = sq.members.some((x) => x.weaponData.bipod);
+    const where = kind === 'patrol' ? `${d}m 밖에서 이쪽으로 순찰` : `앞쪽 오솔길 약 ${d}m 에 매복`;
+    this.hud.toast(`${SPAWN_KINDS[S.kind].label.split(' ')[0]} ${n}명${mg ? ' (경기관총)' : ''} — ${where}${n < S.size ? ` · 최대 ${CONFIG.ai.maxActive}명이라 ${n}명만` : ''}`, 3);
   }
 
   // =================================================================
@@ -811,6 +1050,12 @@ export class Game {
   _onPlayerHit(e) {
     const r = e.wound;
     if (!r || r.alreadyDead) return;
+    if (r.ignored) {
+      // F9 무적: 맞은 줄만 알게 (약한 충격·번쩍임) — 부상·출혈 없음
+      this.rig.impact(0, 1, 0.3);
+      this.hud.hitFlash(0.25);
+      return;
+    }
     const P = CONFIG.injury.player;
     const yaw = this.controller.yaw;
     let side = 0, back = 1;

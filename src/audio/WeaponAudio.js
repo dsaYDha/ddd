@@ -18,7 +18,9 @@ const BANK = { seed: 0x7a3c19, ownVariants: 5, blastVariants: 3 };
 const OWN = { gain: 2.0, send: 0.5, rateJitter: 0.03, gainJitter: 0.08, casingChance: 0.65 };
 // 먼 총성: 크기 = (refM / d)^rolloff, 저역 통과 = lpHz·(lpRefM/d)^lpExp (2단 — 숲 흡수는 고역에서 가파름),
 //          잔향 보내기 = send·(d/50)^sendGrowth (최대 maxSendMul 배), boom = 멀리 가는 낮은 '쿵'
-const REMOTE = { gain: 1.0, refM: 10, rolloff: 0.9, lpHz: 10000, lpRefM: 30, lpExp: 0.8, minLp: 450, send: 0.6, sendGrowth: 0.5, maxSendMul: 2.6, boom: 0.2 };
+const REMOTE = { gain: 1.0, refM: 10, rolloff: 0.9, lpHz: 10000, lpRefM: 30, lpExp: 0.8, minLp: 450, send: 0.6, sendGrowth: 0.5, maxSendMul: 2.6, boom: 0.2, closeM: 25 };
+// 무기 소리 성격 기본값 (CONFIG.weapons.*.sound 가 없을 때 — 1~3단계 먼 총성 그대로)
+const DEFAULT_PROFILE = { rate: 1, boom: 1, lpMul: 1, crack: 1 };
 // 초음속 '딱': 크기 = (refM / d)^exponent (충격파 압력 ∝ 거리^-3/4), N파 길이 baseT·d^(1/4) (Whitham — 7.62mm, 마하 2 부근)
 const CRACK = { gain: 1.0, refM: 0.5, exponent: 0.75, minGain: 0.03, baseT: 0.00014, classes: [0.3, 0.7, 1.5, 3, 6, 12], zipBelow: 1, send: 0.05 };
 // 착탄: 크기 = 1 / (1 + d·fall), 저역 통과 = lpHz·(lpRefM/d)^lpExp, 잔향은 멀수록 많이, 탄속 refSpeed 기준으로 세기
@@ -98,10 +100,10 @@ export class WeaponAudio {
    *  timeOffset(선택): 실제 발사가 이 프레임 끝보다 몇 초 앞이었는지 (Weapon 'shot'·Shooter 'fired' 의 timeOffset).
    *   주면 한 프레임(update 의 dt)만큼 늦추고 그 안에서 정확한 시각에 재생 — 프레임과 무관하게 연발 간격(60/rpm)이 고르다.
    */
-  shot({ distance = 0, pan = 0, own = true, behind = false, gain = 1, timeOffset } = {}) {
+  shot({ distance = 0, pan = 0, own = true, behind = false, gain = 1, timeOffset, pos = null, profile = null, veg = 0 } = {}) {
     if (!this._ok()) return;
     if (own) this._ownShot(pan, gain, timeOffset);
-    else this._remoteShot(Math.max(0, distance || 0), pan, behind, gain);
+    else this._remoteShot(Math.max(0, distance || 0), pan, behind, gain, pos, profile, veg);
   }
 
   _ownShot(pan, gain, timeOffset) {
@@ -116,16 +118,28 @@ export class WeaponAudio {
     if (detail > 0.5 && Math.random() < OWN.casingChance) this._casing(t + rand(0.33, 0.6), pan);
   }
 
-  _remoteShot(d, pan, behind, gain) {
-    const e = this.e, B = this.bank, R = REMOTE;
+  /**
+   * 남의 총성. profile: 무기 소리 성격 { rate (재생 속도 = 음높이·짧기), boom (낮은 '쿵'), lpMul (밝기) } — 4단계 적 소총(5.56)은
+   * 높고 짧게 '탁', 경기관총은 낮고 무겁게. veg: 사이 식생 0~1 (빽빽할수록 더 작고 어둡게 — CONFIG.audio.enemy).
+   * 가까우면 (closeM 안) 날카로운 고역 '짝' 을 더해 바로 옆 총성의 공격적인 첫 순간을 살린다.
+   */
+  _remoteShot(d, pan, behind, gain, pos = null, profile = null, veg = 0) {
+    const e = this.e, B = this.bank, R = REMOTE, P = profile ?? DEFAULT_PROFILE, EN = CONFIG.audio.enemy ?? {};
     const t = e.now + 0.002 + d / CONFIG.ballistics.speedOfSound;
-    const att = Math.pow(R.refM / Math.max(R.refM, d), R.rolloff);
-    const lp = clamp(R.lpHz * Math.pow(R.lpRefM / Math.max(1, d), R.lpExp) * (behind ? 0.75 : 1), R.minLp, 18000);
+    const vg = clamp(veg || 0, 0, 1);
+    const att = Math.pow(R.refM / Math.max(R.refM, d), R.rolloff) * (1 - (EN.vegDamp ?? 0) * vg);
+    const lp = clamp(R.lpHz * (P.lpMul ?? 1) * Math.pow(R.lpRefM / Math.max(1, d), R.lpExp) * (behind ? 0.75 : 1) * (1 - (EN.vegLowpass ?? 0) * vg), R.minLp, 18000);
     const send = R.send * clamp(Math.pow(d / 50, R.sendGrowth), 1, R.maxSendMul);
-    const v = e.voice({ gain: R.gain * gain * att * (behind ? 0.85 : 1), lowpass: lp, stages: 2, pan, out: this.out, send });
-    e.play({ t, buffer: B.blast[this._pick(B.blast.length, 'blast')], rate: 1 + rand(-1, 1) * 0.04, out: v });
-    // 저역은 숲에서 덜 흡수돼 멀리 간다 — 먼 총성의 몸통 '쿵'
-    e.tone({ t, freq: rand(66, 78), freqEnd: 40, dur: 0.42, gain: R.boom * clamp(d / 150, 0.3, 1), attack: 0.006, release: 0.4, out: v });
+    const v = e.voice({ gain: R.gain * gain * att * (behind ? 0.85 : 1), lowpass: lp, stages: 2, pan, pos, out: this.out, send });
+    e.play({ t, buffer: B.blast[this._pick(B.blast.length, 'blast')], rate: (P.rate ?? 1) * (1 + rand(-1, 1) * 0.04), out: v });
+    // 저역은 숲에서 덜 흡수돼 멀리 간다 — 먼 총성의 몸통 '쿵' (무기마다 크기·음높이)
+    const bf = 1 / Math.sqrt(P.rate ?? 1);
+    e.tone({ t, freq: rand(66, 78) * bf, freqEnd: 40 * bf, dur: 0.42 / (P.rate ?? 1), gain: R.boom * (P.boom ?? 1) * clamp(d / 150, 0.3, 1), attack: 0.006, release: 0.4, out: v });
+    if (d < R.closeM) {
+      // 가까운 총성: 귀를 때리는 고역 '짝' (멀어질수록 사라짐)
+      const k = 1 - d / R.closeM;
+      e.burst({ t, dur: 0.025 / (P.rate ?? 1), attack: 0.0008, gain: 0.5 * k * gain, filter: 'highpass', freq: 2600 * (P.rate ?? 1), q: 0.7, out: v });
+    }
   }
 
   /** 탄피가 정글 바닥(낙엽·흙)에 떨어지는 작은 소리 — 오른쪽으로 튀어 나감 */
@@ -144,7 +158,7 @@ export class WeaponAudio {
    * 탄이 스치는 순간 바로 (총성보다 먼저 — 어디서 쏘는지 헷갈리게). crack 버스 = 먹먹함을 건너뜀.
    * @param {{missDistance?:number, pan?:number, gain?:number}} o
    */
-  crack({ missDistance = 3, pan = 0, gain = 1 } = {}) {
+  crack({ missDistance = 3, pan = 0, gain = 1, pos = null } = {}) {
     if (!this._ok()) return;
     const e = this.e, C = CRACK;
     const d = Math.max(0.05, Number.isFinite(missDistance) ? missDistance : 3);
@@ -157,7 +171,7 @@ export class WeaponAudio {
     }
     const buffer = this.bank.crack[cls * 2 + (Math.random() < 0.5 ? 0 : 1)];
     const g = C.gain * gain * clamp(Math.pow(C.refM / d, C.exponent), C.minGain, 1);
-    e.play({ t, buffer, gain: g, pan, out: e.buses.crack, send: C.send });
+    e.play({ t, buffer, gain: g, pan, pos, out: e.buses.crack, send: C.send });
     if (d < C.zipBelow) this._zip(t, d, pan, gain);
   }
 
@@ -180,7 +194,7 @@ export class WeaponAudio {
    *  ricochet: Ballistics 'impact' 의 도탄 여부 (바위·물) — 바위는 아니어도 가끔 파편 휘파람
    *  speed: 착탄 속도 (m/s, 느린 탄은 작게), underwater: 물속 바닥에 박힘 (둔하고 작게)
    */
-  impact({ material = 'dirt', distance = 0, pan = 0, ricochet = false, speed, behind = false, underwater = false, gain = 1 } = {}) {
+  impact({ material = 'dirt', distance = 0, pan = 0, ricochet = false, speed, behind = false, underwater = false, gain = 1, pos = null } = {}) {
     if (!this._ok()) return;
     const e = this.e, I = IMPACT;
     const d = Math.max(0, Number.isFinite(distance) ? distance : 0);
@@ -189,7 +203,7 @@ export class WeaponAudio {
     let lp = Math.max(I.minLp, I.lpHz * Math.pow(I.lpRefM / Math.max(I.lpRefM, d), I.lpExp) * (behind ? 0.75 : 1));
     let g = I.gain * gain * sp / (1 + d * I.fall);
     if (underwater) { lp = Math.min(lp, I.underwaterLp); g *= I.underwaterGain; }
-    const v = e.voice({ gain: g, lowpass: lp, pan, out: this.out, send: I.send + I.farSend * Math.min(1, d / I.farM) });
+    const v = e.voice({ gain: g, lowpass: lp, pan, pos, out: this.out, send: I.send + I.farSend * Math.min(1, d / I.farM) });
     const fn = IMPACTS[material] || IMPACTS.dirt;
     fn.call(this, v, t, rand(0.9, 1.1), this._detail(), !!ricochet);
   }
@@ -215,8 +229,17 @@ export class WeaponAudio {
    * @param {'magOut'|'magIn'|'boltPull'|'boltRelease'|'dryClick'|'selector'|'magCheck'|'clearPull'|'malfunction'} kind
    * @param {{pan?:number, duration?:number, rounds?:number, gain?:number}} o  duration: magCheck·clearPull 동작 시간 (없으면 무기 데이터)
    */
-  mech(kind, { pan = MECH.pan, duration, rounds, gain = 1 } = {}) {
+  mech(kind, { pan = MECH.pan, duration, rounds, gain = 1, pos = null, distance = 0 } = {}) {
     if (!this._ok()) return;
+    if (pos) {
+      // 4단계: 남(적)의 탄창 교환·노리쇠 소리 — 위치(HRTF)·거리 감쇠·숲 흡수, 거리/음속 늦게
+      const d = Math.max(0.5, distance);
+      const lp = clamp(9000 * Math.pow(6 / Math.max(6, d), 0.8), 900, 18000);
+      const v = this.e.voice({ gain: MECH.gain * 1.4 * gain / (1 + d * 0.22), lowpass: lp, pos, out: this.out, send: MECH.send + 0.15 * Math.min(1, d / 30) });
+      const fn = MECHS[kind];
+      if (fn) fn.call(this, v, this.e.now + 0.003 + d / CONFIG.ballistics.speedOfSound, { duration, rounds });
+      return;
+    }
     const fn = MECHS[kind];
     if (!fn) return;
     // 고장 순간 Weapon 은 같은 호출 안에서 'malfunction' 다음 'dryFire' {reason:'malfunction'} 을 보낸다 → 그 '딸깍'은

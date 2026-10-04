@@ -79,12 +79,26 @@ export class DebugOverlay {
       `${CONFIG.timeOfDay.presets[i.tod].label} / ${CONFIG.weather.presets[i.weather].label}   품질 ${CONFIG.graphics[i.quality].label}`,
       ...(i.combat ? this._combatLines(i.combat) : []),
       ...(i.injury ? this._injuryLines(i.injury) : []),
+      ...(i.ai ? this._aiLines(i.ai) : []),
       '',
       '[1~9] 테스트 지점 이동:',
       ...i.testPoints.map((t) => `  ${t.key} ${t.name}`),
-      '[F6] 대퇴 부상 (테스트)   [F7] 제압 테스트   [F8] 표적 배치   [F9] 피격 테스트   [H] 붕대 [G] 지혈대 [F] 총 줍기   [Esc] 설정',
+      '[F2] AI 디버그   [F4] 적 생성   [F6] 대퇴 부상 (테스트)   [F7] 제압 테스트   [F8] 표적 배치   [F9] 피격 테스트·무적   [H] 붕대 [G] 지혈대 [F] 총 줍기   [Esc] 설정',
     ];
     return lines.join('\n');
+  }
+
+  /** 4단계: ai = { manager: EnemyManager, wildlife 활동도, 무적 } */
+  _aiLines(ai) {
+    const em = ai.manager;
+    const alive = em.soldiers.filter((s) => s.alive).length;
+    const sq = em.squads.filter((q) => q.alive.length).map((q) => `${q.type === 'ambush' ? '매복' : '순찰'}:${q.state}(${q.alive.length}명·사기 ${Math.round(q.morale)})`);
+    const st = em.stats;
+    return [
+      `적  활동 ${alive}/${CONFIG.ai.maxActive}  시체 ${em.soldiers.length - alive}  분대 ${sq.join(' ') || '-'}`
+        + `   시야 레이 ${(ai.raysPerFrame ?? 0).toFixed(1)}/프레임  경로 ${st.paths}  들은 소리 ${st.heard}  총구 화염 ${st.flashes}  AI ${(ai.ms ?? 0).toFixed(2)} ms`,
+      `동물 활동도 (주변 30m) ${ai.wildlife.toFixed(2)}${ai.invulnerable ? '   [무적]' : ''}`,
+    ];
   }
 
   /** 3단계: inj = Injuries (플레이어) */

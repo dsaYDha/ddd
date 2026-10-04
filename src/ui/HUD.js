@@ -5,6 +5,7 @@
 // 3단계: 체력 바·부상 아이콘·히트마커 없음. 맞은 순간 화면 충격(어두운 붉은 번쩍임), 의식이 흐려지면 검게 꺼짐(blackout),
 //        사망 화면 (원인·생존 시간·Enter 다시 시작), F9 피격 테스트 메뉴 (↑↓ 고르기, Enter 적용, F9 닫기).
 //        F8 피격 로그는 F3 디버그를 켰을 때만 보인다 (Game 이 결정).
+// 4단계: F4 적 생성 메뉴 (↑↓ 고르기, ←→ 값 바꾸기, Enter 실행, F4 닫기).
 const ICONS = {
   stand: '<svg viewBox="0 0 24 40"><circle cx="12" cy="5" r="3.2"/><path d="M8 11h8l1.5 13h-3l-.8 14h-3.4l-.8-14h-3z"/></svg>',
   crouch: '<svg viewBox="0 0 24 40"><circle cx="11" cy="15" r="3.2"/><path d="M7 20h8l3 7-3 2-1 9h-3.5l.5-8-5-2z"/></svg>',
@@ -27,6 +28,7 @@ export class HUD {
       <div id="hitflash"></div>
       <div id="blackout"></div>
       <div id="hittest"><div class="title">피격 테스트 (F9) — ↑↓ 고르기 · Enter 맞기 · F9 닫기</div><div class="items"></div></div>
+      <div id="spawnmenu"><div class="title">적 생성 (F4) — ↑↓ 고르기 · ←→ 바꾸기 · Enter 실행 · F4 닫기</div><div class="items"></div></div>
       <div id="death"><div class="box"><div class="dead">사망</div><div class="cause"></div><div class="time"></div>
         <div class="again">Enter — 다시 시작</div></div></div>
     `);
@@ -34,6 +36,8 @@ export class HUD {
     this.blackoutEl = root.querySelector('#blackout');
     this.hittestEl = root.querySelector('#hittest');
     this.hittestItems = root.querySelector('#hittest .items');
+    this.spawnEl = root.querySelector('#spawnmenu');
+    this.spawnItems = root.querySelector('#spawnmenu .items');
     this.deathEl = root.querySelector('#death');
     this._flash = 0;
     this._flashShown = -1;
@@ -98,6 +102,16 @@ export class HUD {
     if (!items) { this.hittestEl.style.display = 'none'; return; }
     this.hittestEl.style.display = 'block';
     this.hittestItems.innerHTML = items.map((it, i) => `<div class="${i === index ? 'sel' : ''}">${i === index ? '▶ ' : '&nbsp;&nbsp;'}${esc(it.label)}</div>`).join('');
+  }
+
+  /** F4 적 생성 메뉴 — items [{label, value?}] (value 가 있으면 ←→ 로 바꾸는 항목), index 선택. null 이면 닫음 */
+  setSpawnMenu(items, index = 0) {
+    if (!items) { this.spawnEl.style.display = 'none'; return; }
+    this.spawnEl.style.display = 'block';
+    this.spawnItems.innerHTML = items.map((it, i) => {
+      const v = it.value !== undefined ? ` <span class="val">◀ ${esc(it.value)} ▶</span>` : '';
+      return `<div class="${i === index ? 'sel' : ''}">${i === index ? '▶ ' : '&nbsp;&nbsp;'}${esc(it.label)}${v}</div>`;
+    }).join('');
   }
 
   setF7(active) {

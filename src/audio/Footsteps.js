@@ -1,19 +1,44 @@
 // 지면별 발소리 합성: 흙, 낙엽, 질척이는 진흙, 첨벙이는 물, 풀 헤치는 소리, 지피식물·덤불 바스락
-// 4단계 적 발소리는 같은 함수에 pan / distance 를 넘겨 재사용한다.
+// 4단계 적 발소리는 같은 함수를 재사용한다: spatial.pos 가 있으면 소리 하나를 공용 경로(voice: 거리 저역 통과 + HRTF 위치)로
+//  모아 보내고 (재료마다 좌우 팬을 만들지 않음), 거리/음속 만큼 늦게 들린다.
+import { CONFIG } from '../config.js';
 
 export class Footsteps {
   constructor(engine) {
     this.e = engine;
+    this._outOverride = null;
   }
 
-  get out() { return this.e.buses.footsteps; }
+  get out() { return this._outOverride ?? this.e.buses.footsteps; }
+
+  /**
+   * 남(적)의 발소리·헤치는 소리: fn 안의 재료(burst/tone)를 위치 경로 하나로 모음
+   * (fn 이 쓰는 this.e 를 잠깐 대리 객체로 바꿔 팬을 떼고 출력·시각을 바꿈)
+   */
+  _spatial(spatial, fn) {
+    const E = this.e;
+    const d = Math.max(0.5, spatial.distance ?? 0);
+    const lp = Math.max(900, 12000 * Math.pow(5 / Math.max(5, d), 0.75));
+    const v = E.voice({ gain: 1, lowpass: lp, pos: spatial.pos, out: E.buses.footsteps, send: 0.04 + 0.2 * Math.min(1, d / 30) });
+    const delay = d / CONFIG.ballistics.speedOfSound;
+    const proxy = {
+      ready: true, buses: E.buses,
+      get now() { return E.now + delay; },
+      burst: (o) => { o.pan = undefined; o.out = v; return E.burst(o); },
+      tone: (o) => { o.pan = undefined; o.out = v; return E.tone(o); },
+    };
+    this.e = proxy;
+    this._outOverride = v;
+    try { fn(); } finally { this.e = E; this._outOverride = null; }
+  }
 
   /**
    * @param {object} evt  HumanMotor 'footstep' 이벤트
-   * @param {{pan?:number, distance?:number}} spatial
+   * @param {{pan?:number, distance?:number, pos?:{x,y,z}}} spatial
    */
   play(evt, spatial = {}) {
     if (!this.e.ready) return;
+    if (spatial.pos && !this._outOverride) { this._spatial(spatial, () => this.play(evt, { distance: spatial.distance, pan: 0 })); return; }
     const t = this.e.now + 0.005;
     const dist = spatial.distance ?? 0;
     const att = 1 / (1 + dist * 0.12);
@@ -118,6 +143,7 @@ export class Footsteps {
    */
   rustle(evt, spatial = {}) {
     if (!this.e.ready) return;
+    if (spatial.pos && !this._outOverride) { this._spatial(spatial, () => this.rustle(evt, { distance: spatial.distance, pan: 0 })); return; }
     const t = this.e.now + 0.02 + Math.random() * 0.04;
     const dist = spatial.distance ?? 0;
     const pan = spatial.pan ?? (Math.random() - 0.5) * 0.5;
