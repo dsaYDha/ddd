@@ -3,6 +3,9 @@
 //         R 재장전·고장 해결 / B 사격 모드 / T 탄창 확인 → weaponInput (Shooter.update 의 input)
 //         조준 중(전환 포함)에는 이동 제한 'aiming' (속도 × aim.adsMoveMul, 달리기 불가). 방아쇠를 당기면 달리기를 멈춘다.
 //  3단계: locked = true 이면 (총에 맞은 충격·사망) 마우스·키 입력을 모두 버린다 — 이동·시점·자세·사격 없음.
+//  5단계: T 짧게 = 탄창 확인 (뗄 때), 길게(ammo.pouchLongPress 초) = 탄약 주머니 확인 (pouchCheck 한 프레임).
+//         V 누르고 있기 = 탄창 채우기 (refillHeld), M·N 누르고 있기 = 지도·나침반 (mapHeld·compassHeld).
+//         handsBusy (지도·나침반·탄창 채우기 중) 이면 사격·조준·재장전 입력을 막는다 — 이동 제한은 Game 이 건다.
 import { CONFIG } from '../config.js';
 import { clamp } from '../core/math.js';
 import { EventEmitter } from '../core/EventEmitter.js';
@@ -24,6 +27,13 @@ export class PlayerController extends EventEmitter {
     this.aim = null;   // AimModel (Game 이 붙임) — 우클릭을 놓은 뒤 총을 내리는 동안에도 조준 이동 제한 유지
     this.weaponInput = { trigger: false, triggerPressed: false, aim: false, holdBreath: false, reload: false, mode: false, magCheck: false };
     this.locked = false;
+    this.pouchCheck = false;
+    this.refillHeld = false;
+    this.mapHeld = false;
+    this.compassHeld = false;
+    this.handsBusy = false;     // Game 이 정함 (지도·나침반을 들었거나 탄창을 채우는 중)
+    this._tHeld = 0;
+    this._tUsed = false;
   }
 
   update(dt) {
@@ -39,6 +49,8 @@ export class PlayerController extends EventEmitter {
       this.lookDeltaYaw = 0; this.lookDeltaPitch = 0;
       const W = this.weaponInput;
       W.aim = W.trigger = W.triggerPressed = W.holdBreath = W.reload = W.mode = W.magCheck = false;
+      this.pouchCheck = this.refillHeld = this.mapHeld = this.compassHeld = false;
+      this._tHeld = 0; this._tUsed = false;
       m.input.move.x = 0; m.input.move.z = 0; m.input.sprint = false; m.input.jump = false; m.input.lean = 0;
       if (m.restrictions.has('aiming')) m.clearRestriction('aiming');
       return;
@@ -61,7 +73,24 @@ export class PlayerController extends EventEmitter {
     W.holdBreath = aimHeld && shift;
     W.reload = inp.pressed(K.reload);
     W.mode = inp.pressed(K.fireMode);
-    W.magCheck = inp.pressed(K.magCheck);
+    // T: 짧게 누르고 떼면 탄창 확인, 길게 누르고 있으면 탄약 주머니 확인
+    W.magCheck = false;
+    this.pouchCheck = false;
+    if (inp.isDown(K.magCheck)) {
+      this._tHeld += dt;
+      if (!this._tUsed && this._tHeld >= CONFIG.ammo.pouchLongPress) { this.pouchCheck = true; this._tUsed = true; }
+    } else {
+      if (this._tHeld > 0 && !this._tUsed) W.magCheck = true;
+      this._tHeld = 0;
+      this._tUsed = false;
+    }
+    this.refillHeld = inp.isDown(K.refill);
+    this.mapHeld = inp.isDown(K.map);
+    this.compassHeld = inp.isDown(K.compass);
+    if (this.handsBusy) {
+      // 손이 지도·나침반·탄창에 있음 → 사격·조준·재장전·모드 입력 없음
+      W.aim = W.trigger = W.triggerPressed = W.holdBreath = W.reload = W.mode = W.magCheck = false;
+    }
     const aiming = aimHeld || (this.aim ? this.aim.ads > 0.02 : false);
     const cur = m.restrictions.get('aiming');
     if (aiming && (!cur || cur.maxSpeedMultiplier !== CONFIG.aim.adsMoveMul)) {

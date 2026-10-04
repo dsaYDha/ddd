@@ -37,6 +37,9 @@ export const SURF = {
   inner:     { kind: KIND.fabric, color: 0x16180f, rough: 1.0, metal: 0.0 },    // 소매 안쪽 그늘
   skin:      { kind: KIND.skin, color: 0x8c5c3f, rough: 0.58, metal: 0.0 },     // 햇볕에 그을린 손
   nail:      { kind: KIND.skin, color: 0xbf9378, rough: 0.38, metal: 0.0 },
+  // 5단계: 주운 적 소총 (5.56 계열) — 검은 합성수지 개머리판·총열 덮개·손잡이
+  polymer:   { kind: KIND.grip, color: 0x1f211d, rough: 0.72, metal: 0.0 },
+  polyGrip:  { kind: KIND.grip, color: 0x191a17, rough: 0.66, metal: 0.0 },
 };
 
 // ---------------------------------------------------------------
@@ -304,6 +307,9 @@ export function buildRifle(data = {}) {
   const H = data.sightHeight ?? 0.06;
   const b = new PartBuilder();
   const B = RIFLE_BONES;
+  // 몸통 재질: 'wood' (기본 7.62) / 'polymer' (5단계 적 소총)
+  const POLY = data.model === 'polymer';
+  const S_WOOD = POLY ? SURF.polymer : SURF.wood, S_GRIP = POLY ? SURF.polyGrip : SURF.grip;
 
   // ---- 주요 치수 (총 공간, −Z 앞)
   const yB = -H;                          // 총열 축
@@ -408,7 +414,7 @@ export function buildRifle(data = {}) {
       const k = 0.93 + 0.07 * Math.sqrt(endK);
       secs.push({ z, w: 0.0178 * k, h: 0.014 * (0.9 + 0.1 * endK), cy: yGt + 0.0005, p: 2.6 });
     }
-    b.add(loftZ(secs, 24), { surf: SURF.wood, bone: B.root, uvScale: 5, uvOffset: [0.31, 0.17], shade: wear(0.12, 0.3), crease: 50 });
+    b.add(loftZ(secs, 24), { surf: S_WOOD, bone: B.root, uvScale: 5, uvOffset: [0.31, 0.17], shade: wear(0.12, 0.3), crease: 50 });
   }
   // 아래 덮개: 손바닥 받침이 불룩한 덮개 (옆면 손가락 홈)
   {
@@ -423,7 +429,7 @@ export function buildRifle(data = {}) {
       const hw = (0.0195 + 0.0035 * swell - groove) * (0.96 + 0.04 * endK);
       secs.push({ z, w: hw, h: 0.0245, cy: yB - 0.0085, p: 2.9 });
     }
-    b.add(loftZ(secs, 26), { surf: SURF.wood, bone: B.root, uvScale: 5, uvOffset: [0.73, 0.41], shade: wear(0.12, 0.32), crease: 50 });
+    b.add(loftZ(secs, 26), { surf: S_WOOD, bone: B.root, uvScale: 5, uvOffset: [0.73, 0.41], shade: wear(0.12, 0.32), crease: 50 });
     // 덮개 앞 고정쇠 (쇠띠)
     b.add(loftZ([
       { z: zHgF, w: 0.0205, h: 0.0255, cy: yB - 0.0075, p: 3 },
@@ -569,7 +575,7 @@ export function buildRifle(data = {}) {
       rings.push(ring(pts, c.clone().addScaledVector(fwd, 0.0015 * t), X_AXIS, fwd));
     }
     // 손잡이 공간 = 축을 Z 로 본 좌표 (체커링이 옆면에 고르게) → UV 는 상자 투영 그대로
-    b.add(loft(rings), { surf: SURF.grip, bone: B.root, uvScale: 15, uvOffset: [0.12, 0.6], shade: wear(0.1, 0.25), crease: 55 });
+    b.add(loft(rings), { surf: S_GRIP, bone: B.root, uvScale: 15, uvOffset: [0.12, 0.6], shade: wear(0.1, 0.25), crease: 55 });
     // 손잡이 위 리시버 아래 받침 (손잡이 고정 나사 판)
     b.add(bevelBox(0.024, 0.006, 0.05, 0.001), { surf: SURF.steel, bone: B.root, matrix: mat(0, yRecBot - 0.001, 0.18) });
   }
@@ -590,7 +596,7 @@ export function buildRifle(data = {}) {
       const endK = Math.min(1, t * 30);
       secs.push({ z, w: hw * (0.985 + 0.015 * endK), h: (top - bot) / 2, cy: (top + bot) / 2, p: 2.7 + 0.8 * t });
     }
-    b.add(loftZ(secs, 28), { surf: SURF.wood, bone: B.root, uvScale: 4.5, uvOffset: [0.55, 0.05], shade: wear(0.1, 0.3), crease: 50 });
+    b.add(loftZ(secs, 28), { surf: S_WOOD, bone: B.root, uvScale: 4.5, uvOffset: [0.55, 0.05], shade: wear(0.1, 0.3), crease: 50 });
     // 개머리판 앞 쇠 테 (리시버와 맞물림)
     const s0 = secs[0];
     b.add(loftZ([

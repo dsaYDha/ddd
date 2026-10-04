@@ -6,6 +6,7 @@
 //        사망 화면 (원인·생존 시간·Enter 다시 시작), F9 피격 테스트 메뉴 (↑↓ 고르기, Enter 적용, F9 닫기).
 //        F8 피격 로그는 F3 디버그를 켰을 때만 보인다 (Game 이 결정).
 // 4단계: F4 적 생성 메뉴 (↑↓ 고르기, ←→ 값 바꾸기, Enter 실행, F4 닫기).
+// 5단계: 무전 자막 (화면 아래 — 잡음과 함께 짧게), 내 위치·목표·거리 표시는 없다.
 const ICONS = {
   stand: '<svg viewBox="0 0 24 40"><circle cx="12" cy="5" r="3.2"/><path d="M8 11h8l1.5 13h-3l-.8 14h-3.4l-.8-14h-3z"/></svg>',
   crouch: '<svg viewBox="0 0 24 40"><circle cx="11" cy="15" r="3.2"/><path d="M7 20h8l3 7-3 2-1 9h-3.5l.5-8-5-2z"/></svg>',
@@ -24,13 +25,14 @@ export class HUD {
       <div id="stance-icon"><div class="icon"></div><div class="quiet-dot" title="조용히 걷기"></div></div>
       <div id="corner-tr"><div id="hitlog"><div class="title">피격 로그 (F8)</div><div class="lines"></div></div>
         <div id="f7hint">제압 테스트 중 (F7로 중지)</div></div>
+      <div id="radio"><span class="tag">무전</span><span class="text"></span></div>
       <div id="toast"></div>
       <div id="hitflash"></div>
       <div id="blackout"></div>
       <div id="hittest"><div class="title">피격 테스트 (F9) — ↑↓ 고르기 · Enter 맞기 · F9 닫기</div><div class="items"></div></div>
       <div id="spawnmenu"><div class="title">적 생성 (F4) — ↑↓ 고르기 · ←→ 바꾸기 · Enter 실행 · F4 닫기</div><div class="items"></div></div>
       <div id="death"><div class="box"><div class="dead">사망</div><div class="cause"></div><div class="time"></div>
-        <div class="again">Enter — 다시 시작</div></div></div>
+        <div class="again">Enter — 결과 보기 (임무 실패)</div></div></div>
     `);
     this.hitflashEl = root.querySelector('#hitflash');
     this.blackoutEl = root.querySelector('#blackout');
@@ -51,6 +53,9 @@ export class HUD {
     this.hitlogLines = root.querySelector('#hitlog .lines');
     this.f7El = root.querySelector('#f7hint');
     this.toastEl = root.querySelector('#toast');
+    this.radioEl = root.querySelector('#radio');
+    this.radioText = root.querySelector('#radio .text');
+    this._radioTimer = 0;
     this._stance = '';
     this._toastTimer = 0;
     this.pulse = 0;
@@ -63,6 +68,15 @@ export class HUD {
     this.toastEl.classList.add('show');
     this._toastTimer = seconds;
   }
+
+  /** 5단계 무전 자막 (seconds 동안) */
+  radio(text, seconds = 4) {
+    this.radioText.textContent = text;
+    this.radioEl.classList.add('show');
+    this._radioTimer = seconds;
+  }
+
+  clearRadio() { this._radioTimer = 0; this.radioEl.classList.remove('show'); }
 
   /** F8 피격 로그 (최신이 앞). null 이면 숨김 */
   setHitLog(entries) {
@@ -166,6 +180,10 @@ export class HUD {
     if (this._toastTimer > 0) {
       this._toastTimer -= dt;
       if (this._toastTimer <= 0) this.toastEl.classList.remove('show');
+    }
+    if (this._radioTimer > 0) {
+      this._radioTimer -= dt;
+      if (this._radioTimer <= 0) this.radioEl.classList.remove('show');
     }
   }
 }

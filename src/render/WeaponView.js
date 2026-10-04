@@ -412,7 +412,7 @@ export class WeaponView {
     this.shooter = shooter || null;
     if (!shooter) return;
     const data = shooter.weapon?.data;
-    if (data && (data.sightRadius !== this.dims.sightRadius || data.sightHeight !== this.dims.sightHeight)) this._buildRifle(data);
+    if (data && (data.sightRadius !== this.dims.sightRadius || data.sightHeight !== this.dims.sightHeight || (data.model ?? 'wood') !== this._model)) this._buildRifle(data);
     if (typeof shooter.on !== 'function') return;
     const subs = [
       ['fired', (e) => this._onFired(e)],
@@ -579,6 +579,7 @@ export class WeaponView {
 
   _buildRifle(data) {
     const rifle = buildRifle(data);
+    this._model = data.model ?? 'wood';
     this.points = rifle.points;
     this.frames = rifle.frames;
     this.dims = rifle.dims;

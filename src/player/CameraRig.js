@@ -101,14 +101,16 @@ export class CameraRig {
     // 눈높이: 임계 감쇠 스프링 (발 디딤·자세 전환·빠짐을 부드럽게)
     const target = m.position.y + m.eyeHeight;
     const w = C.eyeHeightSmoothing;
-    const diff = target - this.eyeY;
-    if (Math.abs(diff) > 1.5) { this.eyeY = target; this.eyeVel = 0; }
-    this.eyeVel += (w * w * diff - 2 * w * this.eyeVel) * dt;
-    this.eyeY += this.eyeVel * dt;
-
-    // 착지 딥
-    this.dipVel += (-60 * this.dip - 12 * this.dipVel) * dt;
-    this.dip += this.dipVel * dt;
+    if (Math.abs(target - this.eyeY) > 1.5) { this.eyeY = target; this.eyeVel = 0; }
+    // 5단계: 프레임이 아주 낮으면 (dt 0.1) 한 번에 적분하는 스프링이 발산한다 → 0.02초 이하로 나눠 적분
+    const steps = Math.max(1, Math.ceil(dt / 0.02)), h = dt / steps;
+    for (let k = 0; k < steps; k++) {
+      this.eyeVel += (w * w * (target - this.eyeY) - 2 * w * this.eyeVel) * h;
+      this.eyeY += this.eyeVel * h;
+      // 착지 딥
+      this.dipVel += (-60 * this.dip - 12 * this.dipVel) * h;
+      this.dip += this.dipVel * h;
+    }
 
     // 가늠자 조준 중엔 머리 흔들림을 줄임 (뺨을 개머리판에 붙이고 버팀)
     const steady = 1 - 0.8 * clamp(this.ads, 0, 1);

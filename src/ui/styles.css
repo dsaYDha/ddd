@@ -40,7 +40,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0c09; col
 #hitlog .empty { color: var(--dim); }
 #f7hint { display: none; font-size: 12px; color: #e3b47e; background: rgba(0, 0, 0, 0.45); padding: 4px 10px; border-radius: 3px;
   letter-spacing: 0.04em; }
-#toast { position: absolute; left: 50%; bottom: 14%; transform: translateX(-50%); font-size: 14px; color: var(--ink);
+#toast { position: absolute; left: 50%; bottom: 14%; transform: translateX(-50%); font-size: 14px; color: var(--ink); z-index: 9;
   opacity: 0; transition: opacity 0.3s; text-shadow: 0 1px 3px #000; letter-spacing: 0.05em; }
 #toast.show { opacity: 0.8; }
 
@@ -98,3 +98,43 @@ button.primary:focus-visible, select:focus-visible, input:focus-visible { outlin
 #aidebug .ai-label { position: absolute; left: 0; top: 0; white-space: nowrap; font: 10px/1.35 ui-monospace, Menlo, Consolas, monospace;
   color: #d8d2c2; background: rgba(0, 0, 0, 0.55); padding: 2px 5px; border-radius: 3px; }
 #aidebug .ai-label .m { color: #a9a395; }
+
+/* ---- 5단계: 무전 자막 · 종이 지도 · 손목 나침반·시계 · 탄창 채우기 · 화면 흐름 ---- */
+#radio { position: absolute; left: 50%; bottom: 7%; transform: translateX(-50%); max-width: min(760px, calc(100vw - 32px)); z-index: 9;
+  display: flex; gap: 10px; align-items: baseline; opacity: 0; transition: opacity 0.35s; font-size: 15px; color: #d9d6c4;
+  text-shadow: 0 1px 3px #000, 0 0 8px rgba(0,0,0,0.6); letter-spacing: 0.03em; }
+#radio.show { opacity: 0.92; }
+#radio .tag { font-size: 11px; color: #a8b27a; letter-spacing: 0.15em; border: 1px solid rgba(168,178,122,0.5); padding: 1px 6px; border-radius: 2px; }
+#papermap { position: absolute; left: 50%; bottom: 0; width: min(88vh, 94vw); aspect-ratio: 1; max-width: 100%; display: none; z-index: 8;
+  transform: translate(-50%, 105%); transform-origin: 50% 100%; filter: drop-shadow(0 8px 24px rgba(0,0,0,0.6)); }
+#papermap canvas { width: 100%; height: 100%; display: block; border-radius: 2px; }
+#wristgear { position: absolute; right: 4vw; bottom: 0; width: min(520px, 60vw); aspect-ratio: 520 / 360; display: none; z-index: 8;
+  transform-origin: 70% 100%; filter: drop-shadow(0 6px 18px rgba(0,0,0,0.6)); }
+#wristgear canvas, #refillview canvas { width: 100%; height: 100%; display: block; }
+#refillview { position: absolute; left: 50%; bottom: 0; width: min(460px, 70vw); aspect-ratio: 460 / 330; display: none; z-index: 7;
+  transform: translate(-50%, 100%); filter: drop-shadow(0 6px 16px rgba(0,0,0,0.55)); }
+#screens .panel.wide { width: min(1180px, calc(100vw - 32px)); }
+#screens h2 { margin: 0 0 14px; font-size: 22px; letter-spacing: 0.2em; font-weight: 600; color: #e2dfcc; }
+#screens h2.ok { color: #b9cf8a; } #screens h2.fail { color: #d9967a; }
+#screens .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+#screens .col-buttons { display: flex; flex-direction: column; gap: 10px; max-width: 260px; margin-top: 12px; }
+button.ghost { font: inherit; font-size: 14px; letter-spacing: 0.12em; padding: 10px 22px; background: rgba(255,255,255,0.03); color: #d8d4c0;
+  border: 1px solid #4b513a; border-radius: 3px; cursor: pointer; }
+button.ghost:hover { background: rgba(168,178,122,0.12); }
+button.ghost.danger { border-color: #7a4b38; color: #e0b7a2; }
+#screens .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+#screens .card { text-align: left; font: inherit; display: flex; flex-direction: column; gap: 8px; padding: 16px; cursor: pointer;
+  background: rgba(30,34,24,0.85); border: 1px solid #3f4532; border-radius: 4px; color: #c9c6b4; min-width: 0; }
+#screens .card b { font-size: 17px; letter-spacing: 0.15em; color: #e6e2cc; }
+#screens .card span { font-size: 13px; line-height: 1.6; }
+#screens .card:hover, #screens .card:focus-visible { border-color: #8a9660; background: rgba(48,56,34,0.9); }
+.brief-cols { display: flex; gap: 22px; flex-wrap: wrap; }
+.brief-text { flex: 1 1 340px; min-width: 0; font-size: 14px; line-height: 1.65; color: #c4c1b0; }
+.brief-text p { margin: 0 0 8px; } .brief-text .obj { padding-left: 14px; color: #e0dcc4; }
+.brief-text .meta { color: #a8b27a; } .brief-text .note, #screens .note { color: #8c8a7c; font-size: 12px; }
+.brief-text ul.equip { margin: 0 0 10px; padding-left: 18px; }
+.brief-map { flex: 1 1 420px; min-width: 0; max-width: 560px; }
+.brief-map canvas { width: 100%; height: auto; display: block; border-radius: 2px; box-shadow: 0 6px 20px rgba(0,0,0,0.5); }
+.brief-map .map-note { font-size: 12px; color: #8c8a7c; margin-top: 6px; }
+#rs-body table td { vertical-align: top; padding: 4px 8px 4px 0; }
+#rs-body td.key { width: 42%; }

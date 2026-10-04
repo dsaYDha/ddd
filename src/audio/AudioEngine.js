@@ -15,6 +15,8 @@ import { CONFIG } from '../config.js';
 const MUFFLE_Q = -3.01;
 // 무기 버스와 먹먹함을 거치는 '세상' 버스 목록 (crack 은 따로)
 const WORLD_BUSES = ['footsteps', 'ambience', 'weather', 'body', 'weapons'];
+// 5단계: 설정 음량 분류 (전체 = master) — 효과음 / 환경음 / 무전
+const CATEGORY = { effects: ['footsteps', 'body', 'weapons', 'crack'], ambience: ['ambience', 'weather'], radio: ['radio'] };
 
 // 정글 잔향 임펄스 응답 (시드 고정 절차 생성 — 매번 같은 숲)
 //  · 0~90ms: 가까운 나무 줄기·땅에서 오는 촘촘한 초기 반사 (탁탁 튀는 질감)
@@ -42,6 +44,9 @@ const IR = {
   itd: 0.0005,               // 메아리 좌우 도달 시간 차 (s) — 가까운 쪽 귀에 먼저
   block: 32,                 // 필터 계수·포락선을 이 표본 수마다 갱신 (잡음이라 계단이 들리지 않음 — 생성 시간 절약)
 };
+// 5단계: 빽빽한 숲 (능선·평지) 의 짧은 잔향 — 줄기 사이 산란만, 골짜기 꼬리·메아리 없음.
+//  위 IR(골짜기) 과 지형에 따라 섞는다 (setReverbMix: 둘레가 높은 골짜기일수록 긴 꼬리)
+const IR_FOREST = { ...IR, seed: 0x666f7265, seconds: 1.3, rtFast: 0.65, rtSlow: 1.4, slowLevel: 0.12, echoes: [] };
 
 export class AudioEngine {
   constructor() {
@@ -96,26 +101,52 @@ export class AudioEngine {
     this.muffle.frequency.value = ctx.sampleRate / 2;
     this.muffle.Q.value = MUFFLE_Q;
     this.world.connect(this.muffle).connect(this.master);
+    this._base = {};
     for (const name of WORLD_BUSES) {
       const g = ctx.createGain();
-      g.gain.value = CONFIG.audio[name === 'body' ? 'breathing' : name] ?? 1;
-      g.connect(this.world);
+      g.gain.value = this._base[name] = CONFIG.audio[name === 'body' ? 'breathing' : name] ?? 1;
+      if (name === 'weapons') {
+        // 5단계: 총성 전용 압축 — 가까운 연발·여러 총성이 겹쳐도 찢어지지 않게 먼저 누른다 (빠른 attack, 짧은 release)
+        const wc = this.weaponComp = ctx.createDynamicsCompressor();
+        const C = CONFIG.audio.mix?.weaponComp ?? {};
+        wc.threshold.value = C.threshold ?? -20; wc.knee.value = C.knee ?? 6; wc.ratio.value = C.ratio ?? 4;
+        wc.attack.value = C.attack ?? 0.002; wc.release.value = C.release ?? 0.12;
+        g.connect(wc).connect(this.world);
+      } else g.connect(this.world);
       this.buses[name] = g;
     }
     // 초음속 '딱' — 먹먹함을 건너뛰어 master 로 바로
     const crack = ctx.createGain();
-    crack.gain.value = CONFIG.audio.crack ?? CONFIG.audio.weapons ?? 1;
+    crack.gain.value = this._base.crack = CONFIG.audio.crack ?? CONFIG.audio.weapons ?? 1;
     crack.connect(this.master);
     this.buses.crack = crack;
+    // 5단계: 무전 — 귀에 대고 듣는 소리라 먹먹함·잔향을 건너뜀
+    const radio = ctx.createGain();
+    radio.gain.value = this._base.radio = CONFIG.audio.radio ?? 0.8;
+    radio.connect(this.master);
+    this.buses.radio = radio;
+    this._cat = { effects: 1, ambience: 1, radio: 1 };
+    this._duck = 0;
 
-    // 정글 잔향: 소리마다 send 양만큼 reverbSend 로 보내면 공용 Convolver 하나가 꼬리를 만든다
+    // 정글 잔향: 소리마다 send 양만큼 reverbSend 로 보내면 Convolver 가 꼬리를 만든다.
+    //  5단계: 골짜기(긴 꼬리·메아리) 와 빽빽한 숲(짧은 산란) 두 개를 지형에 따라 섞음
     this.reverbSend = ctx.createGain();
     this.reverb = ctx.createConvolver();
     this.reverb.normalize = false;               // 크기는 IR 자체에서 맞춤 (normalize 는 버퍼를 넣기 전에 정해야 함)
-    this.reverb.buffer = this._jungleImpulse();
+    this.reverb.buffer = this._jungleImpulse(IR);
+    const scaleValley = this.reverbScale;
     this.reverbReturn = ctx.createGain();
-    this.reverbReturn.gain.value = (CONFIG.audio.reverb ?? 1) * this.reverbScale;
+    this.reverbReturn.gain.value = (CONFIG.audio.reverb ?? 1) * scaleValley;
     this.reverbSend.connect(this.reverb).connect(this.reverbReturn).connect(this.world);
+    this.reverbShort = ctx.createConvolver();
+    this.reverbShort.normalize = false;
+    this.reverbShort.buffer = this._jungleImpulse(IR_FOREST);
+    this._revScale = { valley: scaleValley, forest: this.reverbScale };
+    this.reverbScale = scaleValley;
+    this.reverbShortReturn = ctx.createGain();
+    this.reverbShortReturn.gain.value = 0;
+    this.reverbSend.connect(this.reverbShort).connect(this.reverbShortReturn).connect(this.world);
+    this.valley = -1;
 
     this.buffers.white = this._noiseBuffer('white', 2);
     this.buffers.pink = this._noiseBuffer('pink', 4);
@@ -133,6 +164,55 @@ export class AudioEngine {
 
   setVolume(v) {
     if (this.master) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+  }
+
+  /** 5단계 설정 음량: 'effects' (발소리·몸·무기·'딱') | 'ambience' (환경·날씨) | 'radio' — 0~1 배율 */
+  setCategoryVolume(cat, v) {
+    if (!this.ctx || !CATEGORY[cat]) return;
+    this._cat[cat] = Math.max(0, Math.min(1.5, v));
+    this._applyBusGains();
+  }
+
+  _applyBusGains() {
+    const t = this.ctx.currentTime;
+    for (const [cat, names] of Object.entries(CATEGORY)) {
+      for (const n of names) {
+        const bus = this.buses[n];
+        if (!bus) continue;
+        let g = (this._base[n] ?? 1) * this._cat[cat];
+        if (cat === 'ambience') g *= 1 - this._duck;
+        bus.gain.setTargetAtTime(g, t, 0.05);
+      }
+    }
+  }
+
+  /**
+   * 5단계 다이내믹: 가까운 총성 순간 환경음을 잠깐 낮춤 (amount 0~1 → 최대 −6dB 정도, release 초 동안 회복).
+   * 총성이 환경음 위로 또렷이 서고 전체 압축기가 덜 일한다.
+   */
+  duck(amount, release = 1.4) {
+    if (!this.ctx) return;
+    const a = Math.min(0.5, Math.max(0, amount)) ;
+    const t = this.ctx.currentTime;
+    for (const n of CATEGORY.ambience) {
+      const bus = this.buses[n];
+      if (!bus) continue;
+      const g = (this._base[n] ?? 1) * this._cat.ambience;
+      bus.gain.cancelScheduledValues(t);
+      bus.gain.setTargetAtTime(g * (1 - a), t, 0.01);
+      bus.gain.setTargetAtTime(g, t + 0.08, release / 3);
+    }
+  }
+
+  /** 5단계 지형 잔향: 0 = 빽빽한 숲·능선 (짧은 산란), 1 = 골짜기 (긴 꼬리·메아리) */
+  setReverbMix(valley) {
+    if (!this.reverbShortReturn) return;
+    const v = Math.max(0, Math.min(1, valley));
+    if (Math.abs(v - this.valley) < 0.02) return;
+    this.valley = v;
+    const base = CONFIG.audio.reverb ?? 1, t = this.ctx.currentTime;
+    this.reverbReturn.gain.setTargetAtTime(base * this._revScale.valley * (0.3 + 0.7 * v), t, 1.2);
+    this.reverbShortReturn.gain.setTargetAtTime(base * this._revScale.forest * (0.25 + 0.75 * (1 - v)) * 0.8, t, 1.2);
   }
 
   /**
@@ -180,7 +260,7 @@ export class AudioEngine {
    * 정글 잔향 임펄스 응답 (스테레오). Math.random 대신 고정 시드 — 같은 숲이 매번 같은 소리를 내고,
    * 1단계 소리의 난수 순서도 건드리지 않는다. 크기 정규화 배율은 this.reverbScale (되돌림 gain 에 곱함).
    */
-  _jungleImpulse() {
+  _jungleImpulse(IR) {
     const ctx = this.ctx, sr = ctx.sampleRate;
     const n = Math.floor(IR.seconds * sr);
     const buf = ctx.createBuffer(2, n, sr);

@@ -102,16 +102,17 @@ export class WeaponAudio {
    */
   shot({ distance = 0, pan = 0, own = true, behind = false, gain = 1, timeOffset, pos = null, profile = null, veg = 0 } = {}) {
     if (!this._ok()) return;
-    if (own) this._ownShot(pan, gain, timeOffset);
+    if (own) this._ownShot(pan, gain, timeOffset, profile);
     else this._remoteShot(Math.max(0, distance || 0), pan, behind, gain, pos, profile, veg);
   }
 
-  _ownShot(pan, gain, timeOffset) {
+  /** 내 총성. profile 이 있으면 (5단계: 주운 적 소총) 그 무기 음높이로 — 5.56 은 더 높고 짧게 */
+  _ownShot(pan, gain, timeOffset, profile = null) {
     const e = this.e, B = this.bank;
     const t = e.now + (Number.isFinite(timeOffset) ? Math.max(0, this._dt - timeOffset) : 0.002);
     const detail = this._detail();
     const k = this._pick(B.own.length, 'own');
-    const rate = 1 + rand(-1, 1) * OWN.rateJitter;
+    const rate = (profile?.rate ?? 1) * (1 + rand(-1, 1) * OWN.rateJitter);
     const g = OWN.gain * gain * (1 + rand(-1, 1) * OWN.gainJitter);
     // 스테레오 버퍼 (좌우 반사가 다름) — 팬 0 이면 좌우 그대로 통과. 잔향은 gain 뒤에서 보내므로 크기를 따라감
     e.play({ t, buffer: B.own[k], rate, gain: g, pan, out: this.out, send: OWN.send });
@@ -412,6 +413,13 @@ const IMPACTS = {
 const reloadData = () => CONFIG.weapons[CONFIG.weapons.default]?.reload ?? {};
 
 const MECHS = {
+  // 5단계: 낱발 한 발을 탄창에 눌러 넣음 — 탄이 입술을 지나며 '딸깍', 스프링이 눌리는 짧은 긁힘
+  roundIn(v, t) {
+    const p = rand(0.94, 1.06);
+    this._scrape(v, t, 0.07, 0.045, 2400 * p, 3400 * p, 3);
+    this._metal(v, t + 0.04, 0.22, 3600 * p, 0.012);
+    this._thunk(v, t + 0.045, 0.05, 520 * p, 0.02);
+  },
   magOut(v, t, o) {
     this._metal(v, t, 0.35, 3200, 0.018);                       // 탄창 멈치 누름
     this._scrape(v, t + 0.03, 0.22, 0.13, 1600, 900, 2);        // 홈에서 빠져나옴

@@ -7,8 +7,12 @@ import { clamp, lerp } from '../core/math.js';
 const DEG = Math.PI / 180;
 
 function presetState(tod, weather) {
+  return stateFrom(tod, CONFIG.weather.presets[weather]);
+}
+
+/** 시간대 프리셋 키 + 날씨 값 (프리셋 또는 5단계 WeatherCycle.params — 섞인 값) → 대기 상태 */
+function stateFrom(tod, W) {
   const T = CONFIG.timeOfDay.presets[tod];
-  const W = CONFIG.weather.presets[weather];
   const gray = W.skyGray;
   const toGray = (c, k, g = 0.5) => {
     const l = c[0] * 0.3 + c[1] * 0.55 + c[2] * 0.15;
@@ -19,11 +23,11 @@ function presetState(tod, weather) {
     sunColor: T.sunColor.slice(), sunIntensity: T.sunIntensity * W.sunMul,
     skyColor: toGray(T.skyColor, gray * 0.7), groundColor: T.groundColor.slice(),
     hemiIntensity: T.hemiIntensity * (1 - gray * 0.35),
-    fogColor: toGray(T.fogColor, gray * 0.6, 0.45), fogDensity: T.fogDensity + W.fogAdd, mist: T.mist * (1 + gray * 0.5),
+    fogColor: toGray(T.fogColor, gray * 0.6, 0.45), fogDensity: T.fogDensity + W.fogAdd, mist: T.mist * (1 + gray * 0.5) * (W.mistMul ?? 1),
     skyTop: toGray(T.skyTop, gray * 0.9, 0.4), skyHorizon: toGray(T.skyHorizon, gray * 0.85, 0.45),
     exposure: T.exposure, overcast: gray, rain: W.rain,
     wind: 0.25 + W.rain * 0.75,
-    shafts: (tod === 'dawn' ? 0.55 : tod === 'noon' ? 0.22 : 0.4) * (1 - gray),
+    shafts: (tod === 'dawn' ? 0.55 : tod === 'noon' ? 0.22 : tod === 'dusk' ? 0.4 : 0) * (1 - gray),
   };
 }
 
@@ -51,7 +55,10 @@ export class Atmosphere {
     this.state = presetState(this.tod, this.weather);
     this.target = this.state;
     this.wetness = CONFIG.weather.presets[this.weather].wetness;
+    this.wetTarget = this.wetness;
     this.rainIntensity = this.state.rain;
+    this.dynamic = false;          // 5단계 임무: 시계·날씨 흐름이 매 프레임 목표를 정함 (setDynamic)
+    this.lightning = 0;            // 번개 밝기 0~1 (빠르게 사라짐)
     this.sunDir = new THREE.Vector3();
     this.settings = null;
     this._envDirty = true;
@@ -61,7 +68,7 @@ export class Atmosphere {
     this.skyUniforms = {
       topColor: { value: new THREE.Color() }, horizonColor: { value: new THREE.Color() },
       fogColor: { value: new THREE.Color() }, sunDir: { value: new THREE.Vector3() },
-      sunColor: { value: new THREE.Color() }, overcast: { value: 0 }, haze: { value: 0 },
+      sunColor: { value: new THREE.Color() }, overcast: { value: 0 }, haze: { value: 0 }, flash: { value: 0 },
     };
     this.skyMat = new THREE.ShaderMaterial({
       uniforms: this.skyUniforms,
@@ -74,7 +81,7 @@ export class Atmosphere {
         }`,
       fragmentShader: /* glsl */`
         uniform vec3 topColor, horizonColor, fogColor, sunColor, sunDir;
-        uniform float overcast, haze;
+        uniform float overcast, haze, flash;
         varying vec3 vDir;
         void main() {
           float h = clamp( vDir.y, -0.2, 1.0 );
@@ -84,6 +91,7 @@ export class Atmosphere {
           // 지평선 근처는 안개 색으로
           col = mix( col, fogColor, clamp( haze * ( 1.0 - smoothstep( -0.05, 0.35, h ) ), 0.0, 1.0 ) );
           col = mix( col, fogColor, smoothstep( 0.02, -0.2, h ) );
+          col += vec3( 0.72, 0.78, 0.95 ) * flash * ( 0.6 + 0.4 * max( h, 0.0 ) );   // 번개
           gl_FragColor = vec4( col, 1.0 );
           #include <tonemapping_fragment>
           #include <colorspace_fragment>
@@ -133,15 +141,42 @@ export class Atmosphere {
   }
 
   setTimeOfDay(key, instant = false) {
+    this.dynamic = false;
     this.tod = key;
     this._retarget(instant);
   }
 
   setWeather(key, instant = false) {
+    this.dynamic = false;
     this.weather = key;
-    if (instant) this.wetness = CONFIG.weather.presets[key].wetness;
+    this.wetTarget = CONFIG.weather.presets[key].wetness;
+    if (instant) this.wetness = this.wetTarget;
     this._retarget(instant);
   }
+
+  /**
+   * 5단계 임무: 시계의 시간대 섞기 (GameClock.todBlend — 두 프리셋 a·b, 비율 k) + 날씨 흐름 값 (WeatherCycle.params).
+   * 둘 다 이미 연속으로 변하므로 목표를 바로 상태로 쓴다. 비 강도·젖음도는 update 가 천천히 따라간다.
+   * instant: 임무 시작 (젖음도·비도 바로)
+   */
+  setDynamic(blend, W, instant = false) {
+    const a = stateFrom(blend.a, W);
+    const st = blend.b === blend.a || blend.k <= 0 ? a : lerpState(a, stateFrom(blend.b, W), blend.k);
+    this.dynamic = true;
+    this.tod = blend.k > 0.5 ? blend.b : blend.a;
+    this.weather = W.kind ?? this.weather;
+    this.target = st;
+    this.state = st;
+    this._t = 1;
+    this.wetTarget = W.wetness;
+    if (instant) { this.wetness = W.wetness; this.rainIntensity = st.rain; this._envDirty = true; this._envTimer = 0; }
+    // 하늘 반사(환경맵)는 천천히 바뀌므로 20초마다 다시 굽는다
+    this._dynEnv = (this._dynEnv ?? 0) + 1;
+    this._applyState();
+  }
+
+  /** 번개: 하늘·반구광이 잠깐 번쩍임 (0~1) */
+  flash(intensity) { this.lightning = Math.max(this.lightning, Math.min(1, intensity)); }
 
   _retarget(instant) {
     this.target = presetState(this.tod, this.weather);
@@ -169,12 +204,23 @@ export class Atmosphere {
     // 비 강도 (조금 더 천천히)
     this.rainIntensity += (this.target.rain - this.rainIntensity) * (1 - Math.exp(-CONFIG.weather.transitionRate * dt));
     // 젖음도: 비가 오면 오르고, 그치면 천천히 마름
-    const wTarget = CONFIG.weather.presets[this.weather].wetness;
+    const wTarget = this.wetTarget;
     if (this.wetness < wTarget) this.wetness = Math.min(wTarget, this.wetness + CONFIG.weather.wettingRate * (0.4 + this.rainIntensity) * dt);
     else this.wetness = Math.max(wTarget, this.wetness - CONFIG.weather.dryingRate * dt);
 
     this.query.wetness = this.wetness;
     this.query.rainIntensity = this.rainIntensity;
+    // 번개 (빠르게 사라지며 한 번 더 깜빡)
+    if (this.lightning > 0) {
+      this._lt = (this._lt ?? 0) + dt;
+      this.lightning = Math.max(0, this.lightning - dt * 2.6);
+      if (this.lightning <= 0) this._lt = 0;
+    }
+    this.skyUniforms.flash.value = this.lightning * (0.75 + 0.25 * Math.sin((this._lt ?? 0) * 40)) * 1.6;
+    if (this.dynamic) {
+      this._envClock = (this._envClock ?? 0) + dt;
+      if (this._envClock > 20) { this._envClock = 0; this._envDirty = true; }
+    }
     shared.uWetness.value = this.wetFactor * 0.85 + 0.1;
     shared.uRain.value = this.rainIntensity;
     shared.uTime.value += dt;
@@ -216,7 +262,8 @@ export class Atmosphere {
 
   _applyState() {
     const s = this.state;
-    const el = s.sunElevation * DEG, az = s.sunAzimuth * DEG;
+    // 해가 지평선 아래 (5단계 동트기 전·어스름) 여도 빛은 땅 위에서 비추게 (세기가 아주 작음)
+    const el = Math.max(3, s.sunElevation) * DEG, az = s.sunAzimuth * DEG;
     this.sunDir.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)).normalize();
     this.sun.color.setRGB(...s.sunColor);
     this.sun.intensity = s.sunIntensity;
@@ -232,7 +279,7 @@ export class Atmosphere {
     su.horizonColor.value.setRGB(...s.skyHorizon);
     su.fogColor.value.setRGB(...s.fogColor);
     su.sunDir.value.copy(this.sunDir);
-    su.sunColor.value.setRGB(...s.sunColor);
+    su.sunColor.value.setRGB(...s.sunColor).multiplyScalar(Math.min(1, s.sunIntensity / 1.5));
     su.overcast.value = s.overcast;
     su.haze.value = clamp(s.fogDensity * 40, 0, 1);
     shared.uWind.value = s.wind;

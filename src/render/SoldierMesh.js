@@ -315,7 +315,7 @@ export function buildSoldierGeometry(localPose, variant = 0, weapon = 'rifle') {
   const F = bodyFrame(caps);
   addHat(buf, caps.find((c) => c.part === 'head'), V.camoHat ? V.cloth : GEAR.hatPlain, V.camoHat ? seed : 0);
   addBelt(buf, caps, F);
-  addWeapon(buf, caps, weapon);
+  if (weapon !== 'none') addWeapon(buf, caps, weapon);   // 5단계: 플레이어가 주워 간 총은 없음
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(buf.pos, 3));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(buf.nor, 3));
@@ -399,7 +399,7 @@ export class SoldierMeshes {
   }
 
   // -------------------------------------------------------------
-  _kind(s) { return s.weaponData?.bipod ? 'lmg' : 'rifle'; }
+  _kind(s) { return s.weaponTaken ? 'none' : s.weaponData?.bipod ? 'lmg' : 'rifle'; }
 
   _acquire(s, pose) {
     const key = `${s.variant ?? 0}|${this._kind(s)}|${shapeKey(pose)}`;

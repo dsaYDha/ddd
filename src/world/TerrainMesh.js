@@ -13,6 +13,7 @@ export function createTerrainMaterial(tex) {
   splat.minFilter = THREE.LinearMipmapLinearFilter;
   splat.generateMipmaps = true;
   splat.needsUpdate = true;
+  mat.userData.splat = splat;   // 5단계: 임무 개활지(야영지·모래톱)를 깎을 때 다시 올림
   const L = CONFIG.lighting;
 
   addPatch(mat, 'terrain', (shader) => {

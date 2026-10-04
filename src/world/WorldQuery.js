@@ -36,6 +36,21 @@ class UniformGrid {
     const j = this._clampI(Math.floor((z + this.half) / this.cell));
     return this.cells[this._idx(i, j)] || EMPTY;
   }
+  /** 5단계: 항목 빼기 (넣을 때와 같은 AABB) */
+  removeAABB(item, minX, minZ, maxX, maxZ) {
+    const i0 = this._clampI(Math.floor((minX + this.half) / this.cell));
+    const i1 = this._clampI(Math.floor((maxX + this.half) / this.cell));
+    const j0 = this._clampI(Math.floor((minZ + this.half) / this.cell));
+    const j1 = this._clampI(Math.floor((maxZ + this.half) / this.cell));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const list = this.cells[this._idx(i, j)];
+        if (!list) continue;
+        const k = list.indexOf(item);
+        if (k >= 0) list.splice(k, 1);
+      }
+    }
+  }
   /** 반경 안의 셀들을 돌며 콜백 (중복 가능 → stamp로 거름) */
   forEachNear(x, z, r, fn) {
     const i0 = this._clampI(Math.floor((x - r + this.half) / this.cell));
@@ -69,20 +84,32 @@ export class WorldQuery {
       this.circleGrid.insertAABB(c, c.x - c.r - PAD, c.z - c.r - PAD, c.x + c.r + PAD, c.z + c.r + PAD);
     }
     this.supportGrid = new UniformGrid(data.size, 4);
-    for (const s of data.supports) {
-      if (s.kind === 'capsule') {
-        s.dx = s.bx - s.ax; s.dz = s.bz - s.az;
-        s.len2 = s.dx * s.dx + s.dz * s.dz;
-        this.supportGrid.insertAABB(s, Math.min(s.ax, s.bx) - s.r, Math.min(s.az, s.bz) - s.r, Math.max(s.ax, s.bx) + s.r, Math.max(s.az, s.bz) + s.r);
-      } else if (s.kind === 'ellipsoid') {
-        s.cos = Math.cos(s.yaw); s.sin = Math.sin(s.yaw);
-        const m = Math.max(s.rx, s.rz);
-        this.supportGrid.insertAABB(s, s.cx - m, s.cz - m, s.cx + m, s.cz + m);
-      }
-    }
+    for (const s of data.supports) this.addSupport(s);
     this._stamp = 0;
     this._ground = { terrain: 0, support: 0, surface: 0, waterLevel: NO_WATER, waterDepth: 0, onDike: false, obstacle: null };
     this._slope = { deg: 0, gx: 0, gz: 0 };
+  }
+
+  // ---------------------------------------------------------------
+  // 5단계: 실행 중 충돌체 더하기·빼기 (임무 오두막 벽, 개활지 깎기)
+  // ---------------------------------------------------------------
+  /** 원기둥 {x, z, r, y0, y1, type, tags} */
+  addCircle(c) {
+    const P = CIRCLE_PAD;
+    this.circleGrid.insertAABB(c, c.x - c.r - P, c.z - c.r - P, c.x + c.r + P, c.z + c.r + P);
+  }
+  removeCircle(c) {
+    const P = CIRCLE_PAD;
+    this.circleGrid.removeAABB(c, c.x - c.r - P, c.z - c.r - P, c.x + c.r + P, c.z + c.r + P);
+  }
+  /** 지지형 장애물 (capsule {ax,ay,az,bx,by,bz,r} · ellipsoid {cx,cy,cz,rx,ry,rz,yaw}) */
+  addSupport(s) {
+    const b = supportBox(s);
+    if (b) this.supportGrid.insertAABB(s, b[0], b[1], b[2], b[3]);
+  }
+  removeSupport(s) {
+    const b = supportBox(s);
+    if (b) this.supportGrid.removeAABB(s, b[0], b[1], b[2], b[3]);
   }
 
   // ---------------------------------------------------------------
@@ -359,6 +386,21 @@ export class WorldQuery {
     }
     return finish(res, maxDist, ox, oy, oz, dx, dy, dz, null, null, false);
   }
+}
+
+/** 지지형 장애물의 평면 AABB (처음 부를 때 모양 값을 채움) */
+function supportBox(s) {
+  if (s.kind === 'capsule') {
+    s.dx = s.bx - s.ax; s.dz = s.bz - s.az;
+    s.len2 = s.dx * s.dx + s.dz * s.dz;
+    return [Math.min(s.ax, s.bx) - s.r, Math.min(s.az, s.bz) - s.r, Math.max(s.ax, s.bx) + s.r, Math.max(s.az, s.bz) + s.r];
+  }
+  if (s.kind === 'ellipsoid') {
+    s.cos = Math.cos(s.yaw); s.sin = Math.sin(s.yaw);
+    const m = Math.max(s.rx, s.rz);
+    return [s.cx - m, s.cz - m, s.cx + m, s.cz + m];
+  }
+  return null;
 }
 
 function finish(res, t, ox, oy, oz, dx, dy, dz, type, tags, hit) {

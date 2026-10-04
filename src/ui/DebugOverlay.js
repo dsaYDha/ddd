@@ -80,12 +80,26 @@ export class DebugOverlay {
       ...(i.combat ? this._combatLines(i.combat) : []),
       ...(i.injury ? this._injuryLines(i.injury) : []),
       ...(i.ai ? this._aiLines(i.ai) : []),
+      ...(i.mission ? this._missionLines(i.mission) : []),
       '',
       '[1~9] 테스트 지점 이동:',
       ...i.testPoints.map((t) => `  ${t.key} ${t.name}`),
-      '[F2] AI 디버그   [F4] 적 생성   [F6] 대퇴 부상 (테스트)   [F7] 제압 테스트   [F8] 표적 배치   [F9] 피격 테스트·무적   [H] 붕대 [G] 지혈대 [F] 총 줍기   [Esc] 설정',
+      '[F2] AI 디버그   [F4] 적 생성   [F6] 대퇴 부상 (테스트)   [F7] 제압 테스트   [F8] 표적 배치   [F9] 피격 테스트·무적   [H] 붕대 [G] 지혈대 [F] 줍기·문서   [M] 지도 [N] 나침반 [V] 탄창 채우기   [Esc] 설정',
     ];
     return lines.join('\n');
+  }
+
+  /** 5단계: 임무 진행 (디버그 모드 F3 에서만 — 화면에는 위치·목표 표시가 없다) */
+  _missionLines(R) {
+    const m = R.mission, d = R.director, w = R.weather.params, c = R.clock;
+    const mm = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+    const obj = m.objectives.map((o) => `${o.done ? '✓' : o.progress > 0 ? `${Math.round(o.progress * 100)}%` : '·'}${o.mapLabel ?? o.id}`).join(' ');
+    return [
+      `임무  ${R.def.label} #${R.def.seed}  경과 ${mm(m.t)} / ${mm(R.def.limit)}  시각 ${c.label}  단계 ${m.phase}${m.phase === 'extract' ? ` (회수 ${Math.round(m.hold)}s)` : ''}  목표 ${obj}`,
+      `날씨  ${w.label} (${w.kind}→${w.next} ${(w.k * 100).toFixed(0)}%)  비 ${w.rain.toFixed(2)}  천둥 가림 ${R.weather.thunderMask.toFixed(2)}`
+        + `   디렉터: 대기 ${d.pending.length} · 생성 ${d.spawned.length} · 증원 ${d.reinforcements}${d.reinforceAt !== null ? `(${Math.round(d.reinforceAt - d.t)}s)` : ''} · 매복 ${d.ambush.state} · 첫 접촉 ${d.firstContact >= 0 ? mm(d.firstContact) : '-'}`,
+      `발자국 ${R.g.footprints.list.length} (화면 ${R.printMesh.shown})   사상자 확인 ${R._stats.confirmed} · 추정 ${R._stats.estimated}   이동 ${Math.round(R._stats.distance)} m`,
+    ];
   }
 
   /** 4단계: ai = { manager: EnemyManager, wildlife 활동도, 무적 } */

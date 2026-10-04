@@ -108,7 +108,8 @@ export class Ambience {
    * @param {number} dt
    * @param {{dawn:number,day:number,dusk:number}} tod  시간대 가중치
    */
-  update(dt, tod, rain, wind, underCanopy, nearWater) {
+  update(dt, tod, rain, wind, underCanopy, nearWater, leafWet = 0) {
+    this.leafWet = leafWet;   // 5단계: 비가 그친 뒤에도 젖은 잎에서 물방울 (젖음도 0~1)
     if (!this.started) return;
     this.tod = tod; this.rain = rain; this.wind = wind; this.underCanopy = underCanopy; this.nearWater = nearWater;
     const ctx = this.e.ctx, t = ctx.currentTime;
@@ -147,8 +148,8 @@ export class Ambience {
       if (Math.random() < p) this._frog();
     }
     if (T.drip <= 0) {
-      // 비가 그친 뒤에도 잎에서 물방울이 떨어짐
-      const r = Math.max(rain, 0.1);
+      // 비가 그친 뒤에도 잎에서 물방울이 떨어짐 (젖은 숲일수록 자주)
+      const r = Math.max(rain, 0.1, (this.leafWet ?? 0) * 0.55);
       T.drip = 0.08 + Math.random() * (0.6 / (0.2 + r * 3));
       if (underCanopy > 0.4 && Math.random() < 0.3 + r) this._drip(r);
     }
