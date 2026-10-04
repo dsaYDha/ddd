@@ -8,6 +8,7 @@ export class NoiseEvents extends EventEmitter {
     super();
     this.time = 0;
     this.rainIntensity = 0;   // 날씨 시스템이 갱신 (0~1)
+    this.thunderMask = 0;     // 5단계: 천둥이 울리는 순간 (0~1, 날씨가 갱신) — 그 순간의 총성을 덮는다
     this.history = [];
     this.last = null;
   }
@@ -24,9 +25,12 @@ export class NoiseEvents extends EventEmitter {
    * @param {object} source      발생시킨 주체 (HumanMotor 등)
    */
   emitNoise(position, baseRadius, kind, source = null, extra = null) {
+    let radius = baseRadius * this.maskFactor();
+    // 천둥이 겹친 총성은 멀리서 구분되지 않는다
+    if (this.thunderMask > 0 && kind === 'gunshot') radius *= 1 - CONFIG.noise.thunderMask * this.thunderMask;
     const evt = {
       x: position.x, y: position.y, z: position.z,
-      radius: baseRadius * this.maskFactor(),
+      radius,
       baseRadius, kind, source, time: this.time, ...extra,
     };
     this.history.push(evt);

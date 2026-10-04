@@ -61,7 +61,7 @@ export class CombatSystem extends EventEmitter {
   fire(shooter, opts) {
     this._statsOf(shooter).shots++;
     const src = shooter?.noiseSource ?? shooter;
-    if (this.noise) this.noise.emitNoise(opts.origin, CONFIG.noise.gunshot, 'gunshot', src, { shooter });
+    if (this.noise) this.noise.emitNoise(opts.origin, CONFIG.noise.gunshot, 'gunshot', src, { shooter, family: opts.weapon?.family ?? null });
     return this.ballistics.fire({ ...opts, shooter }, (p) => {
       const s = p.speed || 1;
       this.emit('shot', { shooter, origin: { ...p.origin }, dir: { x: p.vel.x / s, y: p.vel.y / s, z: p.vel.z / s }, weapon: p.weapon, projectile: p });

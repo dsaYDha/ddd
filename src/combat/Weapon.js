@@ -184,6 +184,53 @@ export class Weapon extends EventEmitter {
     return true;
   }
 
+  // -----------------------------------------------------------------
+  // 5단계: 낱발로 탄창 채우기 · 무기 바꿔 들기 (상태 옮기기)
+  // -----------------------------------------------------------------
+  /** 채울 예비 탄창: 끼우지 않은 탄창 중 덜 찬 것 가운데 가장 적게 남은 것 (같으면 앞 번호). 없으면 -1 */
+  refillIndex() {
+    const cap = this.data.magCapacity | 0;
+    let best = -1, bestN = Infinity;
+    for (let i = 0; i < this.mags.length; i++) {
+      if (i === this.magIndex) continue;
+      const n = this.mags[i].rounds;
+      if (n < cap && n < bestN) { best = i; bestN = n; }
+    }
+    return best;
+  }
+
+  /** 탄창 i 에 한 발 (가득이면 false) */
+  addRound(i) {
+    const m = this.mags[i];
+    if (!m || m.rounds >= (this.data.magCapacity | 0)) return false;
+    m.rounds++;
+    return true;
+  }
+
+  /** 들고 있던 상태 (줍기·내려놓기로 옮길 때) */
+  snapshot() {
+    return {
+      mags: this.mags.map((m) => m.rounds), magIndex: this.magIndex, chambered: this.chambered,
+      mode: this.mode, fouling: this.fouling, malfunctioned: this.malfunctioned,
+    };
+  }
+
+  /** snapshot 상태로 (동작 중이던 것은 취소, 준비 상태) */
+  restore(st) {
+    if (!st) { this.reset(); return; }
+    const cap = this.data.magCapacity | 0;
+    this.mags.length = 0;
+    for (const r of st.mags) this.mags.push({ rounds: Math.max(0, Math.min(cap, r | 0)) });
+    this.magIndex = st.magIndex >= 0 && st.magIndex < this.mags.length ? st.magIndex : (this.mags.length ? 0 : -1);
+    this.chambered = !!st.chambered;
+    this.mode = this._modes().includes(st.mode) ? st.mode : this._modes()[0];
+    this.fouling = clamp(st.fouling ?? 0, 0, 100);
+    this.malfunctioned = !!st.malfunctioned && this.chambered;
+    this._held = false; this._armed = false; this._pending = false; this._delayAt = null;
+    this.action = null;
+    this._setState('ready');
+  }
+
   addFouling(amount) {
     this.fouling = clamp(this.fouling + (amount || 0), 0, 100);
     return this.fouling;

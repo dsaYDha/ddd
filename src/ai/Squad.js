@@ -111,7 +111,9 @@ export class Squad {
       let t = l2 > 0 ? ((p.x - a.x) * dx + (p.z - a.z) * dz) / l2 : 0;
       t = t < 0 ? 0 : t > 1 ? 1 : t;
       const d = Math.hypot(a.x + dx * t - p.x, a.z + dz * t - p.z);
-      if (d < best) { best = d; bs = R.s[i] + (R.s[i + 1] - R.s[i]) * t; }
+      const sc = R.s[i] + (R.s[i + 1] - R.s[i]) * t;
+      // 같은 길을 되짚는 경로 (U턴) 에서는 거의 같은 거리면 앞쪽 구간을 고른다 (진행이 멈추지 않게)
+      if (d < best - 0.35 || (d < best + 0.35 && sc > bs)) { best = Math.min(best, d); bs = sc; }
     }
     return { s: bs, dist: best };
   }
@@ -123,12 +125,13 @@ export class Squad {
     const idx = file.indexOf(soldier);
     if (idx < 0) return null;
     const Q = CONFIG.ai.squad;
-    const intent = Q.patrolSpeed / CONFIG.movement.speed.walk;
+    const intent = (Q.patrolSpeed / CONFIG.movement.speed.walk) * (this.paceMul ?? 1);
     const p = soldier.motor.position;
     if (idx === 0) {
-      const ahead = this.routeAt(this.pointS + 4);
+      const skip = this._skip ?? 0;
+      const ahead = this.routeAt(this.pointS + 4 + skip);
       const end = this.pointS >= this.route.length - 1.5;
-      return { x: ahead.x, z: ahead.z, pace: 'walk', intent, arrive: 0.6, hold: this._lag || end, farFromRoute: this._pointOff > 6 };
+      return { x: ahead.x, z: ahead.z, pace: 'walk', intent, arrive: 0.6, hold: this._lag || end, farFromRoute: this._pointOff > 6 || skip > 0 };
     }
     let back = 0;
     for (let i = 1; i <= idx; i++) back += this.spacing[file[i].order] || 6;
@@ -147,9 +150,12 @@ export class Squad {
     const file = this._buildFile();
     if (!file.length || !this.route) return;
     const pt = file[0];
-    const pr = this.project(pt.motor.position, this.pointS);
+    const pr = this.project(pt.motor.position, this.pointS + (this._skip ?? 0) * 0.5, 14 + (this._skip ?? 0));
     this._pointOff = pr.dist;
     if (pr.dist < 6) this.pointS = Math.max(this.pointS, pr.s);
+    // 5단계: 첨병이 12초 넘게 앞으로 못 나가면 (비탈의 큰 줄기·어린 나무 덤불에 걸림) 목표를 경로 앞쪽으로 더 밀고 길찾기로 돌아감
+    if (this.pointS > (this._progS ?? -1) + 1) { this._progS = this.pointS; this._progT = this.now; this._skip = 0; }
+    else if (!this._lag && this.now - (this._progT ?? this.now) > 12) { this._skip = Math.min(24, (this._skip ?? 0) + 6); this._progT = this.now; }
     // 뒤처진 분대원이 있으면 첨병이 기다림 (진흙에서 분대 전체가 느려짐)
     let lag = false, back = 0;
     for (let i = 1; i < file.length; i++) {
@@ -158,7 +164,23 @@ export class Squad {
       const q = this.project(file[i].motor.position, want, 30);
       if (want - q.s > 7 || q.dist > 8) lag = true;
     }
+    // 5단계: 한 사람이 오래 막혀 있으면 (30초) 더 기다리지 않고 간다 — 막힌 사람은 경로를 다시 찾아 따라옴
+    if (lag) { this._lagSince ??= this.now; if (this.now - this._lagSince > 30) lag = false; }
+    else this._lagSince = null;
     this._lag = lag;
+    // 5단계: 증원은 경로 끝(사건 현장)에 닿으면 그 근처를 수색, 행렬은 경로 끝에서 사라질 준비 (manager 가 정리)
+    if (this.pointS >= this.route.length - 1.5 && !lag && this.reinforce) {
+      const r = this.reinforce;
+      this.reinforce = null;
+      this.contact = { x: r.x, y: 0, z: r.z, time: this.now, uncertainty: 22 };
+      this.threat = this.contact;
+      this.setState('search');
+      return;
+    }
+    if (this.pointS >= this.route.length - 8 && this.oneWay) {
+      if (!this.arrived) { this.arrived = this.now; this.manager.emit('routeEnd', { squad: this }); }
+      return;
+    }
     // 경로 끝: 돌아서 거꾸로 (맨 뒤가 새 첨병)
     if (this.pointS >= this.route.length - 1.5 && !lag) {
       const rp = this.route.pts.slice().reverse();
@@ -466,6 +488,8 @@ export class Squad {
     this.search.pairs.forEach((pair, k) => {
       if (!pair.lead.alive) return;
       const task = this.search.tasks.get(pair.lead);
+      // 5단계: 플레이어의 발자국을 찾으면 따라감 (진흙·젖은 흙 — 더 새 발자국 쪽으로)
+      if (this._trackPrints(pair, task, now)) return;
       if (pair.lead.goal?.done) this._nextSearchPoint(pair, k, n);
       if (now > pair.reconAt) {
         pair.reconAt = now + S.reconEvery * this.rng.range(0.7, 1.3);
@@ -475,6 +499,41 @@ export class Squad {
         }
       }
     });
+  }
+
+  /**
+   * 발자국 추적: 조장 발밑 findRadius 안에 플레이어의 아직 진한 발자국이 있으면 '발견' → followRadius 안의 더 새 발자국으로
+   * 계속 옮겨 가며 따라간다 (따라가는 동안 수색을 포기하지 않음, 분대 접촉 위치도 그 발자국). 끊기면 보통 수색으로.
+   * @returns 추적 중이면 true
+   */
+  _trackPrints(pair, task, now) {
+    const fp = this.manager.footprints, F = CONFIG.footprints;
+    if (!fp) return false;
+    const lp = pair.lead.motor.position;
+    if (!pair.track) {
+      const found = fp.newestNear(lp.x, lp.z, F.findRadius, 'player', pair.lastTrackId ?? 0, 0.2);
+      if (!found) return false;
+      pair.track = found;
+      this.manager.emit('trackFound', { squad: this, soldier: pair.lead, print: found });
+    }
+    const tr = pair.track;
+    const there = Math.hypot(lp.x - tr.x, lp.z - tr.z) < 3;
+    const nxt = fp.newestNear(tr.x, tr.z, F.followRadius, 'player', tr.id, 0.12);
+    if (nxt && (there || nxt.id > tr.id + 6)) pair.track = nxt;
+    else if (there && !nxt) {
+      // 흔적이 끊김 → 그 근처를 보통 수색
+      pair.lastTrackId = tr.id;
+      pair.track = null;
+      this.contact = { x: tr.x, y: tr.y, z: tr.z, time: now, uncertainty: 10 };
+      return false;
+    }
+    const t = pair.track;
+    pair.point = { x: t.x, z: t.z };
+    task.point = pair.point;
+    task.tracking = true;
+    this.contact = { x: t.x, y: t.y, z: t.z, time: now, uncertainty: 6 };
+    this.until = Math.max(this.until, now + 30);
+    return true;
   }
 
   /** 마지막 확인 위치 근처의 의심 가는 수풀 (몸높이 은폐가 짙은 곳) */

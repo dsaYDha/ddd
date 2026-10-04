@@ -101,6 +101,12 @@ export class Perception {
     // 아주 가까우면 잎에 가려도 (숨소리·흔들리는 풀·냄새) 알아챌 수 있다
     const NS = V.nearSense;
     if (NS && this.inView && this.distance < NS.distance) vis = Math.max(vis, NS.visibility * (1 - this.distance / NS.distance));
+    // 5단계: 안개·비 — 화면 안개와 같은 식 exp(−(밀도·거리)²), 맑은 한낮(fogBase) 대비만큼 덜 보인다
+    const fd = info.fogD ?? 0;
+    if (fd > V.fogBase && vis > 0) {
+      const d = this.distance;
+      vis *= Math.exp(-((fd * d) ** 2 - (V.fogBase * d) ** 2));
+    }
     this.rate = detectionRate({
       distance: this.distance, exposure: info.exposure, visibility: vis, speed: info.speed, angleDeg: this.angleDeg,
       state: info.state, sharpness: this.sharpness, suppression: info.suppression, alertMul: this.alertMul,

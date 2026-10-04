@@ -40,6 +40,7 @@ export class EnemyManager extends EventEmitter {
     this.rng = opts.rng ?? new RNG((Math.random() * 4294967296) >>> 0);
     this.nav = opts.nav ?? new NavGrid(this.query, this.layout);
     this.wildlife = opts.wildlife ?? new Wildlife(this.query.size ?? 400, { rng: this.rng });
+    this.footprints = opts.footprints ?? null;   // 5단계: 적도 진흙에 발자국을 남기고, 수색 중엔 플레이어 발자국을 따라감
     this.restQuery = this.query;
     this.soldiers = [];
     this.squads = [];
@@ -184,6 +185,44 @@ export class EnemyManager extends EventEmitter {
     return squad;
   }
 
+  /**
+   * 5단계 야영지: 한 분대(type 'camp') — 보초는 바깥 둘레(13~17m)에서 바깥을 살피고, 쉬는 병사는 모닥불 곁(2~3m)에 앉아 있다.
+   * 경계 전에는 자리를 지키고(mode 'post'), 경계·교전이 시작되면 4단계 분대처럼 엄폐·사격·측면·수색.
+   * @param {{ center:{x,z}, sentries:number, rest:number, seed?:number, mg?:boolean, watch?:{x,z} }} o  watch: 보초 하나가 보는 쪽 (접근로)
+   */
+  spawnCamp(o) {
+    const rng = o.seed !== undefined ? new RNG(o.seed) : new RNG(this.rng.int(1, 2 ** 30));
+    const want = (o.sentries ?? 2) + (o.rest ?? 3);
+    const size = this._capSize(want);
+    if (size <= 0) return null;
+    const squad = new Squad(this, { type: 'camp', rng });
+    this.squads.push(squad);
+    const c = o.center;
+    const nS = Math.min(o.sentries ?? 2, size), nR = size - nS;
+    const a0 = o.watch ? Math.atan2(o.watch.z - c.z, o.watch.x - c.x) : rng.range(0, Math.PI * 2);
+    for (let i = 0; i < size; i++) {
+      const sentry = i < nS;
+      let a, r;
+      if (sentry) { a = a0 + i * (Math.PI * 2 / Math.max(1, nS)) + rng.range(-0.3, 0.3); r = rng.range(13, 17); }
+      else { a = ((i - nS) / Math.max(1, nR)) * Math.PI * 2 + rng.range(-0.25, 0.25); r = rng.range(2.2, 3.2); }
+      const p = this.nav.nearestOpen(c.x + Math.cos(a) * r, c.z + Math.sin(a) * r, 3) ?? { x: c.x + Math.cos(a) * r, z: c.z + Math.sin(a) * r };
+      const look = sentry ? { x: c.x + Math.cos(a) * (r + 35), z: c.z + Math.sin(a) * (r + 35) } : { x: c.x, z: c.z };
+      const role = i === nS ? 'leader' : (o.mg && i === nS + 1) ? 'mg' : 'rifleman';
+      const s = new Soldier(this, {
+        x: p.x, z: p.z, yaw: yawOf(look.x - p.x, look.z - p.z), stance: sentry ? 'stand' : 'crouch', rng: new RNG(rng.int(1, 2 ** 30)),
+        role, weapon: role === 'mg' ? 'lmg762' : 'rifle556', variant: rng.int(0, 5),
+      });
+      s.post = { x: p.x, z: p.z, look };
+      s.postRole = sentry ? 'sentry' : 'rest';
+      s.look.yaw = s.motor.yaw;
+      this._addSoldier(s);
+      squad.add(s);
+    }
+    if (!squad.leader && squad.members.length) { squad.leader = squad.members[0]; squad.members[0].role = 'leader'; }
+    this.emit('spawn', { squad });
+    return squad;
+  }
+
   _capSize(n) {
     const left = CONFIG.ai.maxActive - this.active.length;
     return Math.max(0, Math.min(n, left));
@@ -195,6 +234,7 @@ export class EnemyManager extends EventEmitter {
     // 화면·소리 쪽 (Game) 이 병사마다 구독하지 않게 다시 보냄: 신음·핏자국·쓰러짐·식물 헤치는 소리
     for (const ev of ['vocal', 'bleed', 'fall']) s.on(ev, (e) => this.emit(ev, { ...e, soldier: s }));
     s.motor.on('rustle', (e) => this.emit('rustle', { soldier: s, evt: e }));
+    s.motor.on('footstep', (e) => { if (this.footprints) this.footprints.step(s.motor, e, 'enemy'); });
     // 시체가 너무 많으면 오래된 것부터 치움
     const dead = this.soldiers.filter((x) => !x.alive);
     if (this.soldiers.length > MAX_BODIES && dead.length) this._remove(dead[0]);
@@ -206,6 +246,13 @@ export class EnemyManager extends EventEmitter {
     const i = this.soldiers.indexOf(s);
     if (i >= 0) this.soldiers.splice(i, 1);
     this.pits = this.pits.filter((p) => p.soldier !== s);
+  }
+
+  /** 5단계: 분대 하나를 맵에서 치움 (보급 행렬이 맵 가장자리로 빠져나감 — 플레이어 시야 밖일 때만 부름) */
+  removeSquad(sq) {
+    for (const s of sq.members.slice()) this._remove(s);
+    const i = this.squads.indexOf(sq);
+    if (i >= 0) this.squads.splice(i, 1);
   }
 
   /** 모두 제거 */
@@ -366,6 +413,7 @@ export class EnemyManager extends EventEmitter {
     const info = this._tgtInfo;
     info.exposure = typeof t.exposure === 'function' ? t.exposure() : (t.exposure ?? 0.5);
     info.speed = Math.hypot(t.motor.velocity.x, t.motor.velocity.z);
+    info.fogD = this.fogDensity ?? 0;   // 5단계: 안개·비 (Game 이 대기 안개 밀도를 넣음)
     info.now = now;
     for (const s of alive) s.perception.geometry(s.eye, s.look.yaw, chest);
     // 레이 예산: 시야 안 병사를 돌아가며 (오래된 것부터)
@@ -381,6 +429,8 @@ export class EnemyManager extends EventEmitter {
     for (const s of alive) {
       const P = s.perception;
       info.state = PSTATE[s.squad?.state] ?? 'patrol';
+      // 야영지에서 쉬는 병사는 잘 못 봄 (이야기·불·쉼), 보초는 보통보다 조금 더 살핌
+      if (s.mode === 'post') info.state = s.postRole === 'rest' ? 'rest' : 'sentry';
       info.suppression = s.suppression;
       const fresh = P.accumulate(dt, info);
       if (fresh) s.onDetect();
@@ -428,12 +478,15 @@ export class EnemyManager extends EventEmitter {
     if (!fromTarget && !fromSoldier) return;
     if (fromSoldier && e.kind !== 'gunshot' && e.kind !== 'shout') return;   // 같은 편 발소리는 무시
     if (fromSoldier) e.squad = fromSoldier.squad;
+    // 5단계: 플레이어가 주운 적 소총으로 쏘면 — 소리만 들은 적은 잠깐 아군 총성으로 착각 (첫 반응이 1~2초 늦음)
+    const confused = fromTarget && e.kind === 'gunshot' && e.family === 'enemy';
     for (const s of this.soldiers) {
       if (!s.alive || s === fromSoldier) continue;
       const d = Math.hypot(e.x - s.motor.position.x, e.z - s.motor.position.z);
       if (d > e.radius) continue;
       if (fromSoldier && fromSoldier.squad === s.squad) continue;
-      s.perception.hear(e, d / H.speedOfSound, this.time);
+      const extra = confused && !s.perception.seen ? this.rng.range(CONFIG.ammo.confusion[0], CONFIG.ammo.confusion[1]) : 0;
+      s.perception.hear(e, d / H.speedOfSound + extra, this.time);
       this.stats.heard++;
     }
   }

@@ -238,7 +238,7 @@ export class Soldier extends HumanEntity {
     const sq = this.squad;
     if (!sq) return 'idle';
     switch (sq.state) {
-      case 'patrol': return 'patrol';
+      case 'patrol': return sq.type === 'camp' ? 'post' : 'patrol';
       case 'suspicious': return sq.investigators.includes(this) ? 'investigate' : 'halt';
       case 'alert': return 'alert';
       case 'ambush': return 'ambushWait';
@@ -391,6 +391,23 @@ export class Soldier extends HumanEntity {
     if (slot) this._setGoal(slot.x, slot.z, slot.pace ?? 'walk', { direct: !slot.farFromRoute, arrive: slot.arrive ?? 0.8, hold: slot.hold });
     else this.goal = null;
     this.lookMode = 'move';
+  }
+
+  /** 5단계 야영지: 보초는 자리에서 바깥을 살피고, 쉬는 병사는 모닥불 곁에 앉아 있음 (경계 전) */
+  _m_post() {
+    const p = this.post;
+    this.fire.mode = this.perception.seen ? 'aimed' : 'none';
+    if (!p) { this.goal = null; return; }
+    const d = Math.hypot(p.x - this.motor.position.x, p.z - this.motor.position.z);
+    if (d > 0.8) this._setGoal(p.x, p.z, 'walk', { arrive: 0.5 });
+    else this.goal = null;
+    if (this.postRole === 'rest') {
+      this.wantStance = 'crouch';
+      this.lookAt = p.look; this.lookMode = 'scanPoint'; this.scanAmp = 0.5;
+    } else {
+      this.wantStance = 'stand';
+      this.lookAt = p.look; this.lookMode = 'scanPoint'; this.scanAmp = 1.1;
+    }
   }
 
   _m_halt() {
@@ -772,7 +789,10 @@ export class Soldier extends HumanEntity {
   /** 이동 목표. pace: 'walk'|'run'|'sneak'|'crawl'. opts: { direct, combat, arrive, hold, face } */
   _setGoal(x, z, pace, opts = {}) {
     const g = this.goal;
-    if (g && Math.hypot(g.x - x, g.z - z) < (g.done ? 1.2 : 0.6) && g.pace === pace) {
+    // 5단계: 막혀서 포기한 목표라도 멀리 떨어져 있으면 몇 초 뒤 다시 시도 (분대 행렬이 영영 멈추지 않게)
+    const retry = g && g.done && g.gaveUp && this.now - g.gaveUp > 4
+      && Math.hypot(x - this.motor.position.x, z - this.motor.position.z) > (opts.arrive ?? 1) + 2.5;
+    if (g && !retry && Math.hypot(g.x - x, g.z - z) < (g.done ? 1.2 : 0.6) && g.pace === pace) {
       g.arrive = opts.arrive ?? g.arrive; g.hold = !!opts.hold; g.face = opts.face ?? null;
       return;
     }
@@ -793,7 +813,7 @@ export class Soldier extends HumanEntity {
     if (goal !== this.goal) return;
     this.pathPending = false;
     this.path = path; this.pathIdx = 0;
-    if (!path) { this._stuckCount++; if (this._stuckCount > 2) goal.done = true; }
+    if (!path) { this._stuckCount++; if (this._stuckCount > 2) { goal.done = true; goal.gaveUp = this.now; } }
   }
 
   _steer(dt) {
@@ -819,6 +839,30 @@ export class Soldier extends HumanEntity {
     {
       const av = this._avoid(p, dx, dz);
       if (av) { dx = av.x; dz = av.z; }
+    }
+    // 5단계: 넘을 수 없는 턱 (뛰어넘기 높이보다 높은 통나무·바위) 이 바로 앞이면 그 턱을 따라 옆으로 돈다
+    {
+      const M = CONFIG.movement, wall = M.stepHeight + M.jumpHeight;
+      const hAt = (ax, az) => this.query.getSupportHeight(p.x + ax * 0.6, p.z + az * 0.6) - m.position.y;
+      if (this._wallT > 0) this._wallT -= dt;
+      if (hAt(dx, dz) > wall) {
+        if (!(this._wallT > 0)) {
+          // 목표 쪽에 더 가까운 옆 (좌·우 70°) 중 지나갈 수 있는 쪽
+          const turn = (sgn) => { const a = sgn * 1.22, ca = Math.cos(a), sa = Math.sin(a); return { x: dx * ca - dz * sa, z: dx * sa + dz * ca }; };
+          const L = turn(1), R = turn(-1);
+          const okL = hAt(L.x, L.z) <= wall, okR = hAt(R.x, R.z) <= wall;
+          this._wallSide = okL && !okR ? 1 : okR && !okL ? -1 : (this._wallSide ?? (this.rng.chance(0.5) ? 1 : -1));
+          this._wallT = 1.2;
+        }
+        const a = this._wallSide * 1.22, ca = Math.cos(a), sa = Math.sin(a);
+        const rx2 = dx * ca - dz * sa, rz2 = dx * sa + dz * ca;
+        dx = rx2; dz = rz2;
+      } else if (this._wallT > 0) {
+        // 턱 끝까지 조금 더 옆으로 (모서리를 돌 여유)
+        const a = this._wallSide * 0.6, ca = Math.cos(a), sa = Math.sin(a);
+        const rx2 = dx * ca - dz * sa, rz2 = dx * sa + dz * ca;
+        dx = rx2; dz = rz2;
+      }
     }
     // 줄기에 걸려 비비고 있으면 옆으로 비켜 걷기 (번갈아 좌우 75°)
     if (this._sidestep > 0) {
@@ -858,22 +902,50 @@ export class Soldier extends HumanEntity {
     }
     // 막힘: 실제로 움직인 거리로 판단 (줄기에 비비면 속도는 있어도 제자리) → 옆으로 비켜 보고,
     //  2초 넘게 막히면 다시 경로를 찾고, 다섯 번이면 포기
-    const pr = this._prog || (this._prog = { x: p.x, z: p.z, t: 0 });
+    const pr = this._prog || (this._prog = { x: p.x, z: p.z, t: 0, dt: 0, d0: Infinity, wx: NaN, wz: NaN });
     pr.t += dt;
     if (pr.t >= 0.5) {
       const moved = Math.hypot(p.x - pr.x, p.z - pr.z);
       const frozen = this.injuries.effects().restriction?.maxSpeedMultiplier === 0;
+      // 5단계: 제자리에서 흔들리기만 하는 것도 막힘 — 같은 경유점에 2초 동안 0.4m 도 못 다가갔으면
+      const dWay = Math.hypot(tx - p.x, tz - p.z);
+      let jitter = false;
+      if (pr.wx !== tx || pr.wz !== tz) { pr.wx = tx; pr.wz = tz; pr.d0 = dWay; pr.dt = 0; }
+      else {
+        pr.dt += pr.t;
+        if (pr.dt >= 2) { jitter = pr.d0 - dWay < 0.4; pr.d0 = dWay; pr.dt = 0; }
+      }
       if (moved < 0.1 && !m.transitioning && !frozen) this._stuck += pr.t;
+      else if (jitter && !m.transitioning && !frozen) this._stuck = Math.max(this._stuck + pr.t, 2);
       else this._stuck = 0;
       pr.x = p.x; pr.z = p.z; pr.t = 0;
       if (this._stuck >= 0.5 && !(this._sidestep > 0)) { this._sidestep = 0.8; this._sideDir = this._sideDir === 1 ? -1 : 1; }
       if (this._stuck >= 2) {
         this._stuck = 0;
         this._stuckCount++;
-        if (this._stuckCount > 4) { g.done = true; this._stuckCount = 0; }
+        // 5단계: 판근·통나무 틈에 끼어 세 번째로 막히면, 플레이어가 못 보는 곳에서만 경유점 쪽 가까운 트인 칸으로 살짝 옮긴다
+        if (this._stuckCount >= 3 && this._unstick(tx, tz)) { this._stuckCount = 0; this.path = null; this.pathIdx = 0; }
+        else if (this._stuckCount > 4) { g.done = true; g.gaveUp = this.now; this._stuckCount = 0; }
         else if (!this.pathPending) { this.pathPending = true; this.manager.requestPath(this, g.combat ? 'combat' : 'normal'); }
       }
     }
+  }
+
+  /** 막힘 풀기: 플레이어에게서 35m 밖이고 (90m 안이면) 시야 밖일 때만, 경유점 쪽 2.5m 안의 트인 칸으로 옮김 */
+  _unstick(tx, tz) {
+    const p = this.motor.position, t = this.manager.target;
+    if (t?.motor) {
+      const tp = t.motor.position, d = Math.hypot(tp.x - p.x, tp.z - p.z);
+      if (d < 35) return false;
+      const fx = -Math.sin(t.motor.yaw), fz = -Math.cos(t.motor.yaw);
+      if (d < 90 && ((p.x - tp.x) * fx + (p.z - tp.z) * fz) / d > 0.4) return false;
+    }
+    const dl = Math.hypot(tx - p.x, tz - p.z) || 1, step = Math.min(2.5, dl);
+    const q = this.manager.nav.nearestOpen(p.x + (tx - p.x) / dl * step, p.z + (tz - p.z) / dl * step, 1);
+    if (!q || Math.hypot(q.x - p.x, q.z - p.z) > 3.5) return false;
+    this.motor.teleport(q.x, q.z, this.motor.yaw);
+    this.unstuck = (this.unstuck ?? 0) + 1;
+    return true;
   }
 
   /** 국소 회피: 진행 방향 (dx, dz) 앞 통로에 걸리는 가장 가까운 줄기를 피하는 방향 (없으면 null) */

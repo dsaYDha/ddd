@@ -14,6 +14,8 @@ import { surfaceProps } from '../world/Surfaces.js';
 
 const SQRT2 = Math.SQRT2;
 const BLOCK_TYPES = new Set(['bambooDense', 'vineWall', 'bamboo']);
+const LIFT_SAMPLES = [[0.3, 0.3], [-0.3, 0.3], [0.3, -0.3], [-0.3, -0.3]];
+const WALL_LIFT = CONFIG.movement.stepHeight + CONFIG.movement.jumpHeight;
 const DIRS = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, SQRT2], [1, -1, SQRT2], [-1, 1, SQRT2], [-1, -1, SQRT2]];
 
 export class NavGrid {
@@ -46,33 +48,53 @@ export class NavGrid {
   // -----------------------------------------------------------------
   // 만들기
   // -----------------------------------------------------------------
-  _build(layout) {
-    const q = this.query, N = CONFIG.ai.nav, n = this.n, cs = this.cell;
+  /** 칸 하나의 비용·은폐 (막힘이면 0) */
+  _cell(i, j) {
+    const q = this.query, N = CONFIG.ai.nav, cs = this.cell;
     const maxWade = CONFIG.movement.maxWadeDepth * 0.95;
-    for (let j = 0; j < n; j++) {
-      for (let i = 0; i < n; i++) {
-        const k = j * n + i;
-        const x = -this.half + (i + 0.5) * cs, z = -this.half + (j + 0.5) * cs;
-        const water = q.getWaterDepth(x, z);
-        const slope = q.getSlope(x, z).deg;
-        if (water > maxWade || slope >= N.blockSlopeDeg) { this.cost[k] = 0; continue; }
-        const sp = surfaceProps(q.getSurfaceAt(x, z));
-        let c = (1 / Math.max(0.12, sp.speed)) * (1 + Math.max(0, slope - 8) / 18);
-        let blocked = false;
-        q.circleGrid.forEachNear(x, z, cs * 0.75, (o) => {
-          if (blocked || !o.tags.blocksMovement) return;
-          const d = Math.hypot(o.x - x, o.z - z);
-          if ((BLOCK_TYPES.has(o.type) || o.r >= N.trunkBlockR) && d < o.r + 0.3) blocked = true;
-          else if (d < o.r + 0.7) c += 0.3;
-        });
-        if (blocked) { this.cost[k] = 0; continue; }
-        const lift = q.getSupportHeight(x, z) - q.getTerrainHeight(x, z);
-        if (lift > 1.0) { this.cost[k] = 0; continue; }
-        if (lift > 0.42) c += 2;
-        this.cost[k] = c;
-        this.conceal[k] = Math.round(Math.min(1, Math.max(0, q.coverConcealment(x, z, 1.0))) * 255);
-      }
+    const k = j * this.n + i;
+    const x = -this.half + (i + 0.5) * cs, z = -this.half + (j + 0.5) * cs;
+    const water = q.getWaterDepth(x, z);
+    const slope = q.getSlope(x, z).deg;
+    if (water > maxWade || slope >= N.blockSlopeDeg) { this.cost[k] = 0; return; }
+    const sp = surfaceProps(q.getSurfaceAt(x, z));
+    let c = (1 / Math.max(0.12, sp.speed)) * (1 + Math.max(0, slope - 8) / 18);
+    let blocked = false;
+    q.circleGrid.forEachNear(x, z, cs * 0.75, (o) => {
+      if (blocked || !o.tags.blocksMovement) return;
+      const d = Math.hypot(o.x - x, o.z - z);
+      if ((BLOCK_TYPES.has(o.type) || o.r >= N.trunkBlockR) && d < o.r + 0.3) blocked = true;
+      else if (d < o.r + 0.7) c += 0.3;
+    });
+    if (blocked) { this.cost[k] = 0; return; }
+    const lift = q.getSupportHeight(x, z) - q.getTerrainHeight(x, z);
+    if (lift > 1.0) { this.cost[k] = 0; return; }
+    if (lift > 0.42) c += 2;
+    // 5단계: 칸 가운데만 보면 가는 통나무·판근을 놓친다 → 네 귀퉁이 쪽에 뛰어넘을 수 없는 턱이 있으면 비싸게 (돌아가는 길 선호)
+    for (const [ox, oz] of LIFT_SAMPLES) {
+      const sx = x + ox * cs, sz = z + oz * cs;
+      if (q.getSupportHeight(sx, sz) - q.getTerrainHeight(sx, sz) > WALL_LIFT) { c += 4; break; }
     }
+    this.cost[k] = c;
+    this.conceal[k] = Math.round(Math.min(1, Math.max(0, q.coverConcealment(x, z, 1.0))) * 255);
+  }
+
+  /**
+   * 5단계: 반경 안 칸만 다시 계산 (임무가 야영지·모래톱 개활지를 깎거나 오두막 벽을 세운 뒤).
+   * 오솔길 표시는 그대로 (막힌 칸은 지움)
+   */
+  rebuildRegion(x, z, r) {
+    const i0 = this._ci(x - r), i1 = this._ci(x + r), j0 = this._ci(z - r), j1 = this._ci(z + r);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      this._cell(i, j);
+      const k = j * this.n + i;
+      if (!(this.cost[k] > 0)) this.trail[k] = 0;
+    }
+  }
+
+  _build(layout) {
+    const n = this.n, cs = this.cell;
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) this._cell(i, j);
     // 오솔길 칸
     for (const tr of layout?.trails ?? []) {
       const L = tr.line, r = (tr.halfWidth ?? 1) + 0.8;

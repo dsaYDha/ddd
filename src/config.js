@@ -206,6 +206,7 @@ export const CONFIG = {
     impact: 30,               // 착탄
     weaponMech: 6,            // 탄창 분리·결합, 노리쇠
     dryFire: 3,               // 빈 약실·고장 '딸깍'
+    thunderMask: 0.8,         // 5단계: 천둥이 겹친 순간 총성 반경 감소 비율 (×thunderMask 0~1)
   },
 
   // 노출도 (0~1) — 4단계 적 시야용
@@ -265,8 +266,11 @@ export const CONFIG = {
   weather: {
     presets: {
       clear: { label: '맑음', rain: 0,   wetness: 0.2,  fogAdd: 0,     sunMul: 1.0,  skyGray: 0 },
+      // 5단계: 임무 중 날씨 흐름 (맑음 → 흐림 → 비 → 폭우 → 그침). 그친 뒤에는 젖은 숲에 안개가 짙어짐 (mistMul)
+      overcast: { label: '흐림', rain: 0, wetness: 0.25, fogAdd: 0.004, sunMul: 0.55, skyGray: 0.45 },
       rain:  { label: '비',   rain: 0.5, wetness: 0.65, fogAdd: 0.012, sunMul: 0.3,  skyGray: 0.55 },
       storm: { label: '폭우', rain: 1.0, wetness: 1.0,  fogAdd: 0.026, sunMul: 0.1,  skyGray: 0.85 },
+      clearing: { label: '그침 (안개)', rain: 0, wetness: 0.85, fogAdd: 0.03, sunMul: 0.45, skyGray: 0.5, mistMul: 2.4 },
     },
     wettingRate: 0.04,        // 젖음도 증가 속도 (/s) — 폭우면 약 20초 후 최대
     dryingRate: 0.004,        // 마르는 속도 (/s)
@@ -299,7 +303,26 @@ export const CONFIG = {
         skyTop: [0.3, 0.32, 0.45], skyHorizon: [0.86, 0.56, 0.38], exposure: 1.2,
         ambienceDawn: 0, ambienceDay: 0.35, ambienceDusk: 1,
       },
+      // 5단계: 시계가 흐르며 그 사이를 보간 — 동트기 전 / 해가 진 뒤 어스름 (완전한 밤은 6단계)
+      predawn: {
+        label: '동트기 전', hidden: true, sunElevation: -2, sunAzimuth: 72,
+        sunColor: [0.7, 0.6, 0.62], sunIntensity: 0.35,
+        skyColor: [0.42, 0.48, 0.56], groundColor: [0.12, 0.12, 0.1], hemiIntensity: 0.75,
+        fogColor: [0.42, 0.46, 0.5], fogDensity: 0.017, mist: 0.014,
+        skyTop: [0.2, 0.26, 0.38], skyHorizon: [0.52, 0.5, 0.52], exposure: 1.45,
+        ambienceDawn: 0.6, ambienceDay: 0, ambienceDusk: 0.3,
+      },
+      twilight: {
+        label: '어스름', hidden: true, sunElevation: -3, sunAzimuth: 262,
+        sunColor: [0.8, 0.45, 0.35], sunIntensity: 0.3,
+        skyColor: [0.36, 0.34, 0.42], groundColor: [0.1, 0.09, 0.08], hemiIntensity: 0.6,
+        fogColor: [0.32, 0.3, 0.34], fogDensity: 0.016, mist: 0.012,
+        skyTop: [0.14, 0.16, 0.28], skyHorizon: [0.5, 0.36, 0.32], exposure: 1.5,
+        ambienceDawn: 0, ambienceDay: 0, ambienceDusk: 1,
+      },
     },
+    // 시계 → 시간대 (시각 h 의 키 사이 보간)
+    clock: [[4.9, 'predawn'], [6.0, 'dawn'], [11.5, 'noon'], [13.2, 'noon'], [17.6, 'dusk'], [18.8, 'twilight']],
   },
 
   // ------------------------------------------------------------------
@@ -313,19 +336,19 @@ export const CONFIG = {
       label: '낮음', vegDensity: 0.75, grassDensity: 0.7, groundCoverRadius: 18, groundCoverDensity: 0.55,
       shadows: false, shadowMapSize: 1024, shadowRadius: 0, pixelRatio: 0.75,
       viewDistance: 105, treeNear: 16, treeMid: 48, nearLodDistance: 16, smallDistance: 40, shrubDistance: 34,
-      grassDistance: 27, terrainNear: 40, shafts: 0, lightShafts: false, rainDrops: 2500,
+      grassDistance: 27, terrainNear: 40, shafts: 0, lightShafts: false, rainDrops: 2500, footprints: 160,
     },
     medium: {
       label: '중간', vegDensity: 0.95, grassDensity: 0.92, groundCoverRadius: 32, groundCoverDensity: 0.8,
       shadows: true, shadowMapSize: 1024, shadowRadius: 24, pixelRatio: 1.0,
       viewDistance: 165, treeNear: 26, treeMid: 80, nearLodDistance: 26, smallDistance: 70, shrubDistance: 58,
-      grassDistance: 45, terrainNear: 60, shafts: 28, lightShafts: true, rainDrops: 5000,
+      grassDistance: 45, terrainNear: 60, shafts: 28, lightShafts: true, rainDrops: 5000, footprints: 280,
     },
     high: {
       label: '높음', vegDensity: 1.0, grassDensity: 1.0, groundCoverRadius: 42, groundCoverDensity: 1.0,
       shadows: true, shadowMapSize: 2048, shadowRadius: 40, pixelRatio: 1.5,
       viewDistance: 220, treeNear: 36, treeMid: 105, nearLodDistance: 36, smallDistance: 95, shrubDistance: 78,
-      grassDistance: 62, terrainNear: 90, shafts: 56, lightShafts: true, rainDrops: 9000,
+      grassDistance: 62, terrainNear: 90, shafts: 56, lightShafts: true, rainDrops: 9000, footprints: 360,
     },
   },
   performance: {
@@ -414,6 +437,9 @@ export const CONFIG = {
     default: 'rifle762',
     rifle762: {
       label: '7.62mm 돌격소총',
+      caliber: '7.62x39',         // 5단계: 낱발 탄약과 맞는 탄 (적 5.56 과 호환 안 됨)
+      family: 'player',           // 총성 계열 (적이 들으면 '적 총' — 5단계 혼동 판정)
+      model: 'wood',              // 1인칭 모델: 나무 개머리판·총열 덮개
       weightKg: 3.9,              // 총 무게 (탄창 제외)
       magCapacity: 30,
       magsCarried: 6,             // 휴대 탄창 수 (장전 1 + 예비 5)
@@ -461,6 +487,8 @@ export const CONFIG = {
     // 4단계 적 무기 — 플레이어(7.62mm)와 다른 계열이라 총성·연사 속도가 다르다 (sound: 원거리 총성 합성 배율)
     rifle556: {
       label: '5.56mm 소총 (적)',
+      caliber: '5.56x45', family: 'enemy', model: 'polymer',   // 5단계: 주워서 쓸 수 있음 (검은 합성수지 몸통)
+      pickup: true,
       weightKg: 3.3, magCapacity: 30, magsCarried: 6, magEmptyKg: 0.12, roundKg: 0.012,
       rpm: 760, modes: ['semi', 'auto'],
       muzzleVelocity: 930, dragK: 0.0019, zeroRange: 100, sightHeight: 0.065, sightRadius: 0.5,
@@ -480,6 +508,7 @@ export const CONFIG = {
     },
     lmg762: {
       label: '7.62mm 경기관총 (적)',
+      caliber: '7.62x54', family: 'enemy', pickup: false,
       weightKg: 8.4, magCapacity: 100, magsCarried: 3, magEmptyKg: 0.25, roundKg: 0.0245,
       rpm: 650, modes: ['auto'],
       muzzleVelocity: 830, dragK: 0.00125, zeroRange: 200, sightHeight: 0.07, sightRadius: 0.6,
@@ -733,7 +762,7 @@ export const CONFIG = {
       exposureFloor: 0.02,           // 노출도 하한 (완전히 가려도 아주 조금은)
       motionMul: 2.6,                // 1.5m/s 이상 움직이면 × (1 + motionMul)
       motionFullSpeed: 1.5,
-      stateMul: { patrol: 0.75, suspicious: 1.0, alert: 1.2, engaged: 1.4, search: 1.25, ambush: 1.1 },
+      stateMul: { patrol: 0.75, suspicious: 1.0, alert: 1.2, engaged: 1.4, search: 1.25, ambush: 1.1, rest: 0.45, sentry: 0.9 },
       sharpness: [0.75, 1.25],       // 병사 개인차
       suppressionDull: 0.6,          // 제압 100 이면 감지 속도 × (1 − 0.6)
       decay: 0.12,                   // 안 보이면 초당 감소
@@ -743,6 +772,7 @@ export const CONFIG = {
       nearSense: { distance: 6, visibility: 0.35 },   // 이 거리 안이면 잎에 가려도 투과율 최소 (가까울수록 큼)
       flashRange: 220,               // 총구 화염이 보이는 거리 → 시야 안이면 즉시 노출
       flashVisibleMin: 0.02,
+      fogBase: 0.0085,               // 5단계: 이 안개 밀도(맑은 한낮)보다 짙으면 그만큼 덜 보임 (안개·비·새벽 물안개)
     },
     // 청각 — 소음 이벤트(1·2단계)로 대략적인 위치만 추정
     hearing: {
@@ -813,6 +843,51 @@ export const CONFIG = {
     nav: { cell: 2, maxNodes: 9000, trailMul: 0.5, combatExposureMul: 1.6, blockSlopeDeg: 34, trunkBlockR: 0.45 },
     spawn: { distances: [80, 100, 120, 150], sizes: [4, 5, 6, 7] },
   },
+
+  // ------------------------------------------------------------------
+  // 5단계: 탄약 보충 — 탄창과 별도로 낱발 탄약을 들고 다니며 직접 탄창을 채운다 (임무 중 보급 없음)
+  //  탄창 채우기: 앉거나 엎드려 멈춘 채 V 를 누르고 있으면 발당 roundTime 초 (가장 적게 남은 예비 탄창부터).
+  //  손을 떼거나 움직이거나 제압 maxSuppression 이상이면 중단 — 그때까지 넣은 만큼만. 팔 부상 ×armMul, 양팔이면 불가.
+  // ------------------------------------------------------------------
+  ammo: {
+    loose: 90,                  // 낱발 탄약 (탄창 6개와 별도, 장비 무게에 포함)
+    caliber: '7.62x39',
+    roundTime: 0.4, armMul: 2, maxSuppression: 60, moveCancelSpeed: 0.12,
+    noiseRadius: 3,             // 탄 넣는 소리 (소음 이벤트 반경 m)
+    pouchLongPress: 0.45,       // T 를 이만큼 누르고 있으면 탄약 주머니 확인 (짧게 = 탄창 확인)
+    pouchLabels: [[0.66, '많음'], [0.33, '절반쯤'], [0.005, '조금'], [0, '없음']],
+    pickupTime: 2, pickupRange: 1.9,   // 적 소총 줍기 (F)
+    confusion: [1, 2],          // 적 계열 총으로 쏘면, 소리만 들은 적의 첫 반응이 이만큼 늦어짐 (잠깐 아군으로 착각)
+  },
+
+  // ------------------------------------------------------------------
+  // 5단계: 임무 — 시드마다 배치가 다르다. 시간 단위: 실제 s (게임 시계는 timeScale 배로 흐름)
+  // ------------------------------------------------------------------
+  mission: {
+    handsRaise: 1.0,          // 종이 지도·손목 나침반을 꺼내고 넣는 시간 (s, 각각)
+    handsSpeed: 0.9,          // 지도·나침반을 든 동안 최고 속도 (m/s — 느린 걸음)
+    timeScale: 4,                              // 게임 시각 = 실제의 4배
+    startHours: { dawn: 5.6, noon: 11.4, dusk: 16.5 },
+    duskEndHour: 18.75,                        // 해질녘 시작 임무는 이 시각(완전히 어둡기 전) 전에 제한 시간이 끝남
+    limitMin: { recon: [26, 36], ambush: [30, 40], raid: [30, 40] },   // 제한 시간 (실제 분)
+    observe: { radius: 25, time: 5, coneDeg: 24 },                     // 정찰 지점 확인: 25m 안에서 5초 바라보기
+    extraction: { radius: 15, hold: 60, fade: 4 },                     // 회수 지점: 도착 후 60초 버티면 헬기
+    estimateError: 0.3,                        // 브리핑의 적 규모 오차 (±30%)
+    spawnMinDist: 150,                         // 새로 생기는 적: 플레이어에게서 150m 밖 + 시야 밖
+    spawnHideDeg: 75,                          // 이 각보다 옆·뒤면 '시야 밖' (앞쪽이면 시야 레이가 막혀야 함)
+    firstContactMin: 180,                      // 첫 적과 마주칠 때까지 최소 (s) — 순찰은 이만큼은 떨어진 곳에서 출발
+    convoyDelay: [300, 900],                   // 매복: 보급 행렬 등장 시점 (실제 s)
+    convoySquads: [1, 2],
+    reinforce: { ambush: [180, 360], raid: [180, 300], squad: [4, 6] },   // 증원 도착까지 (s), 인원
+    raid: { soldiers: [6, 10], huts: [2, 3], docTime: 3, bigFightShots: 30, bigFightCasualties: 2, campRadius: 16 },
+    recon: { points: [2, 3], patrols: [2, 3] },
+    traces: { count: [3, 5], dist: [45, 170] },        // 흔적 (발자국·탄피·꺼진 모닥불·잘린 덩굴): 시작점에서 이 거리
+    distantFire: { gap: [80, 210], dist: [450, 900] }, // 멀리서 들리는 총성
+    radio: { lag: [20, 75], wrong: 0.3 },              // 적 정보는 늦게 오고 30% 는 틀림
+    warnMin: [10, 3],                                  // 남은 시간 무전 (분)
+  },
+  // 발자국: 진흙·젖은 흙을 밟으면 남음 (적·플레이어 모두). life 초에 걸쳐 흐려지고, 비가 오면 × (1 + rainMul × 비)
+  footprints: { surfaces: ['wetEarth', 'shallowMud', 'deepMud'], life: 600, rainMul: 4, cap: 900, drawDistance: 45, drawCap: 360, findRadius: 6, followRadius: 12 },
 
   // 4단계: 동물 정적 — 움직이는 사람 주변·총성 뒤 새·벌레 소리가 잦아든다 (그 자체가 단서)
   wildlife: {
@@ -902,6 +977,13 @@ export const CONFIG = {
     // 적 소리: 총성은 사이에 식생이 빽빽할수록 (시야 투과율 0 쪽) 크기 ×(1 − vegDamp), 저역 통과 ×(1 − vegLowpass) 더 줄어듦.
     //  발소리·장전 소리는 이 거리 (m) 안에서만 만든다 (멀면 들리지도 않고 노드만 씀)
     enemy: { vegDamp: 0.45, vegLowpass: 0.6, vegCacheSec: 0.4, footstepRange: 40, mechRange: 30, vocalRange: 90 },
+    // 5단계 마무리 믹스: 무전 버스 크기, 총성 버스 압축기, 가까운 총성 때 환경음 낮춤 (거리 duckRange m 안), 지형 잔향
+    radio: 0.8,
+    mix: {
+      weaponComp: { threshold: -20, knee: 6, ratio: 4, attack: 0.002, release: 0.12 },
+      duck: 0.35, duckRange: 120, duckRelease: 1.6,
+      valleyRing: [30, 60], valleyDepth: 6,      // 둘레 30·60m 평균 높이가 발밑보다 valleyDepth m 높으면 완전한 골짜기
+    },
   },
 
   // 조작 키 (KeyboardEvent.code). Ctrl은 브라우저 단축키와 충돌하므로 쓰지 않는다.
@@ -912,13 +994,15 @@ export const CONFIG = {
     debug: 'F3', incapacitate: 'F6',
     // 2단계: 마우스 버튼은 'Mouse0'(왼쪽)·'Mouse2'(오른쪽)로 표기. 조준 중 Shift(sprint 키) = 숨 참기
     fire: 'Mouse0', aim: 'Mouse2',
-    fireAlt: 'KeyV',          // 마우스 잠금이 안 되는 환경(끌어서 보기)에서 사격 (3단계: F 는 총 줍기)
+    fireAlt: 'KeyK',          // 마우스 잠금이 안 되는 환경(끌어서 보기)에서 사격 (5단계: V 는 탄창 채우기로)
     reload: 'KeyR', fireMode: 'KeyB', magCheck: 'KeyT',
     suppressionTest: 'F7', targets: 'F8',
     // 3단계: 붕대, 지혈대, 떨어뜨린 총 줍기, 피격 테스트 메뉴, 사망 후 다시 시작
     bandage: 'KeyH', tourniquet: 'KeyG', pickup: 'KeyF', hitTest: 'F9', restart: 'Enter',
     // 4단계: AI 디버그 시각화, 적 스폰 메뉴 (F1·F5·F11·F12 는 브라우저 몫이라 쓰지 않음)
     aiDebug: 'F2', spawnMenu: 'F4',
+    // 5단계: 종이 지도·나침반/시계 (누르고 있기), 탄창 채우기 (누르고 있기), 상호작용 = pickup (F: 문서 회수·무기 줍기)
+    map: 'KeyM', compass: 'KeyN', refill: 'KeyV',
   },
 
   // 사용자 설정 기본값 (Esc 메뉴, localStorage 저장)
@@ -928,7 +1012,12 @@ export const CONFIG = {
     quality: 'medium',
     timeOfDay: 'dawn',
     weather: 'clear',
-    volume: 0.8,
+    volume: 0.8,            // 전체
+    volEffects: 1.0,        // 5단계: 효과음 (발소리·몸·무기)
+    volAmbience: 1.0,       //        환경음 (정글·날씨)
+    volRadio: 1.0,          //        무전
+    debugMode: false,       // 5단계: 켜야 F2~F9 디버그·테스트 키가 동작
+    checkpoint: false,      // 5단계: 체크포인트 1회 (중간 목표에서 한 번 저장)
   },
 };
 

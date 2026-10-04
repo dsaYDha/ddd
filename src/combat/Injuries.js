@@ -167,6 +167,25 @@ export class Injuries extends EventEmitter {
     this._appliedAimVer = -1;
   }
 
+  /** 5단계 체크포인트: 상처·피·처치 도구 (사망 아닌 상태만) */
+  snapshot() {
+    return {
+      blood: this.blood, wounds: this.wounds.map((w) => ({ ...w })), bandages: this.bandages, tourniquets: this.tourniquets,
+      time: this.time, nextId: this._nextId, weaponDropped: this.weaponDropped,
+    };
+  }
+
+  restore(st) {
+    this.reset();
+    if (!st) return;
+    this.blood = st.blood;
+    this.wounds = st.wounds.map((w) => ({ ...w }));
+    this.bandages = st.bandages; this.tourniquets = st.tourniquets;
+    this.time = st.time; this._nextId = st.nextId;
+    this.weaponDropped = !!st.weaponDropped;
+    this._ver++;
+  }
+
   // -----------------------------------------------------------------
   // 읽기
   // -----------------------------------------------------------------

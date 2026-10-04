@@ -66,16 +66,38 @@ export class Shooter extends EventEmitter {
     this._fx = {};
     this.blocked = null;
 
-    // 무기 이벤트를 같은 이름·payload 로 다시 보낸다. EventEmitter 에 와일드카드가 없어 무기의 emit 을 감싼다
-    // → 무기에 새 이벤트가 생겨도 여기를 고칠 필요가 없다. 무기 자신의 구독자(아래 'shot' 발사)가 먼저 불린다.
-    const weapon = this.weapon;
+    this._hookWeapon(this.weapon);
+    this.aim.on('holdBreath', (e) => this.emit('holdBreath', e));
+    this._swaps = 0;
+  }
+
+  /**
+   * 무기 이벤트를 같은 이름·payload 로 다시 보낸다. EventEmitter 에 와일드카드가 없어 무기의 emit 을 감싼다
+   * → 무기에 새 이벤트가 생겨도 여기를 고칠 필요가 없다. 무기 자신의 구독자(아래 'shot' 발사)가 먼저 불린다.
+   */
+  _hookWeapon(weapon) {
     const weaponEmit = weapon.emit;
     weapon.emit = (type, payload) => {
       weaponEmit.call(weapon, type, payload);
-      this.emit(type, payload);
+      if (this.weapon === weapon) this.emit(type, payload);
     };
-    weapon.on('shot', (e) => this._onShot(e));
-    this.aim.on('holdBreath', (e) => this.emit('holdBreath', e));
+    weapon.on('shot', (e) => { if (this.weapon === weapon) this._onShot(e); });
+  }
+
+  /**
+   * 5단계: 다른 총으로 바꿔 든다 (주운 적 소총 · 내려놓았던 내 소총). state = Weapon.snapshot() — 탄창·약실·모드가 따라온다.
+   * 조준 모델은 그대로 (흔들림·숨 참기 상태 유지), 반동 수치만 새 무기 것으로. 'weaponChange' {data} 를 보낸다.
+   */
+  setWeapon(weaponData, state = null) {
+    const weapon = new Weapon(weaponData, { rng: fork(this.rng, 10 + (++this._swaps)) });
+    if (state) weapon.restore(state);
+    this.weaponData = weaponData;
+    this.weapon = weapon;
+    this._hookWeapon(weapon);
+    this.aim.weaponData = weaponData;
+    this._refreshZero();
+    this.emit('weaponChange', { data: weaponData });
+    return weapon;
   }
 
   /**
