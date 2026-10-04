@@ -7,6 +7,8 @@
 //   시야각 120° 밖·사거리 밖·투과율 visibleMin 미만이면 0. 안 보이면 decay 로 줄어듦.
 //   투과율은 비싼 레이캐스트라 EnemyManager 가 프레임당 예산 안에서 병사들을 돌아가며 갱신한다 (그 사이에는 마지막 값).
 //   총구 화염: 플레이어가 쏠 때 시야 안이고 조금이라도 보이면 즉시 1 (위치 정확히).
+//   6단계 밤: 노출도에 빛 수준이 이미 들어 있고 (Exposure), 노출도 하한도 빛 수준만큼 낮아진다 (칠흑 속 사람은 거의 안 보임).
+//   플레이어 손전등은 info.lampRate 로 더해진다 (빛 자체가 보임 — 100m 밖에서도).
 //  청각: 들은 소리로는 대략적인 위치만 — 오차 = 거리 × errorFrac (평균), 방향은 무작위.
 //   총성은 거리/음속 뒤에 들리고, 직전 crackWindow 초 안에 근접 탄('딱')을 들었으면 방향을 크게 헷갈린다
 //   (각도 오차 crackAngleDeg, 거리 오차 crackDistFrac).
@@ -23,7 +25,9 @@ export function detectionRate(p) {
   if (p.angleDeg > half && p.distance > V.nearDistance) return 0;
   const d = Math.max(p.distance, V.nearDistance);
   const distMul = Math.min(V.maxDistanceMul, Math.pow(V.refDistance / d, V.distanceExp));
-  const exposure = Math.max(V.exposureFloor, p.exposure ?? 0.5);
+  // 6단계: 밤에는 하한도 빛 수준만큼 (ambient 1 = 낮 그대로, 0.025 이하면 ×0.1)
+  const floor = V.exposureFloor * Math.min(1, Math.max(0.1, (p.ambient ?? 1) * 4));
+  const exposure = Math.max(floor, p.exposure ?? 0.5);
   const motion = 1 + V.motionMul * Math.min(1, Math.max(0, (p.speed ?? 0) / V.motionFullSpeed));
   const periph = p.angleDeg > V.centralDeg / 2 ? V.peripheralMul : 1;
   const stateMul = V.stateMul[p.state] ?? 1;
@@ -109,8 +113,8 @@ export class Perception {
     }
     this.rate = detectionRate({
       distance: this.distance, exposure: info.exposure, visibility: vis, speed: info.speed, angleDeg: this.angleDeg,
-      state: info.state, sharpness: this.sharpness, suppression: info.suppression, alertMul: this.alertMul,
-    });
+      state: info.state, sharpness: this.sharpness, suppression: info.suppression, alertMul: this.alertMul, ambient: info.ambient,
+    }) + (info.lampRate ?? 0);
     const before = this.meter;
     if (this.rate > 0) {
       // 매 순간 집중이 들쭉날쭉 (한 번 훑어보고 놓치기도) — 평균 1

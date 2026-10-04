@@ -133,6 +133,7 @@ export class Mission extends EventEmitter {
       used: s.shots, roundsLeft: s.roundsLeft, looseLeft: s.looseLeft, loaded: s.loaded,
       wounds: s.wounds.slice(), confirmed: s.confirmed, estimated: s.estimated, enemyWounded: s.enemyWounded,
       objectives: this.objectives.map((o) => ({ label: o.label, done: o.done })), weapon: s.weapon,
+      traps: s.traps ?? null,      // 6단계: 함정 (알아챔·걸림·해제)
     };
   }
 }

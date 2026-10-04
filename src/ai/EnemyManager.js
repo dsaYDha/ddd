@@ -10,7 +10,14 @@
 //   · 고함 shout(): 소음 이벤트 + 'shout' 이벤트 (Game 이 3D 음향으로 재생 — 플레이어에게 위치 단서)
 //  이벤트: 'shout' {soldier, kind, position} · 'mech' {soldier, kind} · 'footstep' {soldier, evt} · 'spawn' {squad} ·
 //          'death' {soldier} · 'squadState' {squad, state, prev} · 'ambushSprung' · 'leaderDown' · 'drag' · 'pitExit' · 'modeChange'
-//  target: { person, motor, alive, exposure } — 플레이어 (4단계에서는 적의 표적이 플레이어 하나)
+//  target: { person, motor, alive, exposure, ambient?, lamp? } — 플레이어 (4단계에서는 적의 표적이 플레이어 하나)
+//  6단계 밤 (night 0~1 · moon 은 MissionRuntime 이 넣음):
+//   · 시야: 노출도·하한에 빛 수준 (target.ambient()) — 밤엔 크게 줄고, 소리에 더 의존
+//   · 플레이어 손전등 (target.lamp() → {x,y,z,dx,dy,dz}): 빛이 보이는 병사의 발견 수치가 크게 오름 (visible m 까지)
+//   · 총구 화염: 밤엔 night.muzzle 거리·시야각까지
+//   · 조명탄: 밤에 소리를 듣거나(반경 hearNoiseMin 이상) 교전이 시작되면 분대가 쏨 (requestFlare) — flares (Night.Flares)
+//   · 적 손전등: 순찰 분대 일부 병사(hasLamp)가 밤 순찰·수색 중 켬 (lampOn, lampDir) — lampLightAt() 으로 비친 빛
+//  이벤트 추가: 'flareLaunch' {flare, soldier}
 // =====================================================================
 import { CONFIG } from '../config.js';
 import { EventEmitter } from '../core/EventEmitter.js';
@@ -20,6 +27,7 @@ import { Wildlife } from './Wildlife.js';
 import { Squad } from './Squad.js';
 import { Soldier } from './Soldier.js';
 import { estimateSound } from './Perception.js';
+import { Flares, lampLight } from '../world/Night.js';
 
 const yawOf = (dx, dz) => Math.atan2(-dx, -dz);
 const rr = (rng, r) => rng.range(r[0], r[1]);
@@ -52,7 +60,12 @@ export class EnemyManager extends EventEmitter {
     this._byMotor = new Map();
     this._due = [];
     this._movers = [];
-    this._tgtInfo = { exposure: 0.5, speed: 0, state: 'patrol', suppression: 0, now: 0 };
+    this._tgtInfo = { exposure: 0.5, speed: 0, state: 'patrol', suppression: 0, now: 0, ambient: 1, lampRate: 0 };
+    // 6단계 밤
+    this.night = 0;
+    this.moon = 'half';
+    this.flares = new Flares({ query: this.query, rng: this.rng });
+    this._pendingFlares = [];
     this.stats = { rays: 0, paths: 0, flashes: 0, heard: 0 };
     this._offs = [];
     if (this.noise) this._offs.push(this.noise.on('noise', (e) => this._onNoise(e)));
@@ -122,6 +135,12 @@ export class EnemyManager extends EventEmitter {
       squad.add(s);
     });
     if (!squad.leader) { squad.leader = squad.members[0]; squad.members[0].role = 'leader'; squad.members[0].baseRole = 'leader'; }
+    // 6단계: 가린 손전등 (밤 순찰에서만 켬) — 첨병·분대장 쪽부터
+    const EL = CONFIG.night.enemyLamp;
+    if (o.lamps ?? rng.chance(EL.chance)) {
+      const nL = Math.min(squad.members.length, typeof o.lamps === 'number' ? o.lamps : rng.int(EL.count[0], EL.count[1]));
+      for (let i = 0; i < nL; i++) squad.members[i].hasLamp = true;
+    }
     this.emit('spawn', { squad });
     return squad;
   }
@@ -261,6 +280,8 @@ export class EnemyManager extends EventEmitter {
     this.squads.length = 0;
     this.pits.length = 0;
     this._paths.length = 0;
+    this.flares.clear();
+    this._pendingFlares.length = 0;
     this.emit('clear', {});
   }
 
@@ -387,7 +408,9 @@ export class EnemyManager extends EventEmitter {
     if (t && t.motor) mv.push({ x: t.motor.position.x, z: t.motor.position.z, speed: t.motor.speed });
     for (const s of this.soldiers) if (s.alive) mv.push({ x: s.motor.position.x, z: s.motor.position.z, speed: s.motor.speed });
     this.wildlife.update(dt, mv);
+    this._updateFlares(dt);
     if (!this.soldiers.length) return;
+    this._updateLamps();
     this._perceive(dt);
     // 늦게 들리는 소리
     for (const s of this.soldiers) {
@@ -415,6 +438,8 @@ export class EnemyManager extends EventEmitter {
     info.speed = Math.hypot(t.motor.velocity.x, t.motor.velocity.z);
     info.fogD = this.fogDensity ?? 0;   // 5단계: 안개·비 (Game 이 대기 안개 밀도를 넣음)
     info.now = now;
+    info.ambient = typeof t.ambient === 'function' ? t.ambient() : (t.ambient ?? 1);   // 6단계: 그 자리 빛 수준
+    const lamp = typeof t.lamp === 'function' ? t.lamp() : (t.lamp ?? null);
     for (const s of alive) s.perception.geometry(s.eye, s.look.yaw, chest);
     // 레이 예산: 시야 안 병사를 돌아가며 (오래된 것부터)
     let budget = CONFIG.ai.raysPerFrame;
@@ -432,6 +457,7 @@ export class EnemyManager extends EventEmitter {
       // 야영지에서 쉬는 병사는 잘 못 봄 (이야기·불·쉼), 보초는 보통보다 조금 더 살핌
       if (s.mode === 'post') info.state = s.postRole === 'rest' ? 'rest' : 'sentry';
       info.suppression = s.suppression;
+      info.lampRate = lamp ? this._lampRate(s, lamp) : 0;
       const fresh = P.accumulate(dt, info);
       if (fresh) s.onDetect();
       // 반쯤 알아챔 → 의심 (그쪽을 조사) — 대략적인 위치만
@@ -443,6 +469,98 @@ export class EnemyManager extends EventEmitter {
         s.squad.onSuspicious(s, { x: p.x + Math.cos(a) * err, z: p.z + Math.sin(a) * err, error: err, distance: P.distance }, 'glimpse');
       }
     }
+  }
+
+  /**
+   * 6단계: 플레이어 손전등이 이 병사에게 보이는 정도 → 발견 비율 (/s). 빛이 시야각 안이고 (가림 = 마지막 시야 투과율),
+   * visible m 안이면 거리에 반비례, 불빛이 이쪽을 향하면 × beamMul. 밤이 아니면 거의 0 (낮엔 손전등이 눈에 안 띔)
+   */
+  _lampRate(s, lamp) {
+    const FL = CONFIG.night.flashlight, V = CONFIG.ai.vision;
+    if (this.night < 0.2) return 0;
+    const eye = s.eye;
+    const dx = lamp.x - eye.x, dy = lamp.y - eye.y, dz = lamp.z - eye.z;
+    const d = Math.hypot(dx, dy, dz);
+    if (d > FL.visible || d < 0.3) return 0;
+    const fx = -Math.sin(s.look.yaw), fz = -Math.cos(s.look.yaw), hd = Math.hypot(dx, dz) || 1;
+    const ang = Math.acos(Math.max(-1, Math.min(1, (dx * fx + dz * fz) / hd))) / DEG;
+    if (ang > V.fovDeg / 2 + 15) return 0;
+    // 불빛까지 시야 (병사마다 0.3초에 한 번 레이 — 빛은 잎 틈으로도 새어 보여 투과율의 제곱근)
+    if (!(s._lampVisT > this.time - 0.3)) {
+      s._lampVisT = this.time + this.rng.range(0, 0.1);
+      const r = this.query.raycastWorld({ x: eye.x, y: eye.y, z: eye.z }, { x: dx, y: dy, z: dz }, Math.max(0.1, d - 0.3), 'vision');
+      this.stats.rays++;
+      s._lampVis = r.hit ? 0 : Math.sqrt(r.transmittance);
+    }
+    const vis = s._lampVis ?? 0;
+    if (vis < V.visibleMin) return 0;
+    // 불빛이 이쪽을 비추나 (손전등 원뿔 반각 × 1.6 안)
+    const c = -(dx * lamp.dx + dy * lamp.dy + dz * lamp.dz) / d;
+    const beam = Math.acos(Math.max(-1, Math.min(1, c))) / DEG < FL.angle * 1.6 ? FL.beamMul : 1;
+    const periph = ang > V.centralDeg / 2 ? 0.6 : 1;
+    return FL.detectRate * Math.min(4, 30 / d) * vis * beam * periph * this.night;
+  }
+
+  /** 적 손전등 빛 (0~1) 이 점 (x,y,z) 를 비추는 정도 (가장 밝은 것) */
+  lampLightAt(x, y, z) {
+    let best = 0;
+    for (const s of this.soldiers) {
+      if (!s.lampOn || !s.alive) continue;
+      const v = lampLight(s.lamp, x, y, z);
+      if (v > best) best = v;
+    }
+    return best;
+  }
+
+  /** 6단계: 밤 순찰·수색 중이면 손전등 켬 (교전·경계 중엔 끔) — 방향은 보는 쪽 아래로 */
+  _updateLamps() {
+    const EL = CONFIG.night.enemyLamp;
+    for (const s of this.soldiers) {
+      if (!s.hasLamp) continue;
+      const st = s.squad?.state;
+      const on = s.alive && this.night > 0.5 && (st === 'patrol' || st === 'suspicious' || st === 'search') && s.mode !== 'post';
+      s.lampOn = on;
+      if (!on) continue;
+      const L = s.lamp || (s.lamp = { x: 0, y: 0, z: 0, dx: 0, dy: 0, dz: 0, range: EL.range, angle: EL.angle, light: EL.light });
+      const e = s.eye, yaw = s.look.yaw;
+      // 발 앞 pool m 를 비춤 (아래로 기울임)
+      const ey = e.y - s.motor.position.y, pitch = -Math.atan2(ey, EL.pool);
+      L.x = e.x; L.y = e.y - 0.35; L.z = e.z;
+      L.dx = -Math.sin(yaw) * Math.cos(pitch); L.dy = Math.sin(pitch); L.dz = -Math.cos(yaw) * Math.cos(pitch);
+    }
+  }
+
+  /**
+   * 6단계: 분대가 조명탄을 쏘려 함 (밤·남은 조명탄·쿨다운). at = 확인하려는 대략적인 위치
+   * @returns {boolean} 쏘기로 했나 (delay 뒤 발사)
+   */
+  requestFlare(squad, at) {
+    const F = CONFIG.night.flare;
+    if (this.night < 0.5 || !squad || !at) return false;
+    if (squad.flaresLeft === undefined) squad.flaresLeft = F.perSquad;
+    if (squad.flaresLeft <= 0) return false;
+    if (this.time < (squad.flareAt ?? -Infinity) + F.cooldown) return false;
+    if (this._pendingFlares.some((p) => p.squad === squad)) return false;
+    squad.flaresLeft--;
+    squad.flareAt = this.time;
+    this._pendingFlares.push({ at: this.time + rr(this.rng, F.delay), squad, toward: { x: at.x, z: at.z } });
+    return true;
+  }
+
+  _updateFlares(dt) {
+    const pf = this._pendingFlares;
+    for (let i = pf.length - 1; i >= 0; i--) {
+      const r = pf[i];
+      if (this.time < r.at) continue;
+      pf.splice(i, 1);
+      const sq = r.squad;
+      const shooter = sq.leader?.alive ? sq.leader : sq.members?.find((m) => m.alive && !m.injuries?.effects?.().downed);
+      if (!shooter) continue;
+      const p = shooter.motor.position;
+      const f = this.flares.launch({ x: p.x, y: p.y + 1.5, z: p.z }, r.toward, { squad: sq });
+      this.emit('flareLaunch', { flare: f, soldier: shooter });
+    }
+    this.flares.update(dt);
   }
 
   /** 레이 최대 maxRays 개로 투과율 (가슴 → 머리 → 골반 중 가장 잘 보이는 값). 쓴 레이 수를 돌려줌 */
@@ -468,7 +586,7 @@ export class EnemyManager extends EventEmitter {
 
   // ---- 소리 -----------------------------------------------------------
   _onNoise(e) {
-    if (e.kind === 'gunshot') this.wildlife.gunshot(e.x, e.z);
+    if (e.kind === 'gunshot' || e.kind === 'explosion') this.wildlife.gunshot(e.x, e.z);
     if (!this.soldiers.length) return;
     const H = CONFIG.ai.hearing;
     if (H.ignoreKinds.includes(e.kind)) return;
@@ -500,22 +618,27 @@ export class EnemyManager extends EventEmitter {
   _onShot(e) {
     const t = this.target;
     if (!t || e.shooter !== t.person) return;
-    const V = CONFIG.ai.vision, q = this.query;
+    const V = CONFIG.ai.vision, q = this.query, NM = CONFIG.night.muzzle;
     const o = e.origin;
+    // 6단계: 밤엔 총구 화염이 훨씬 멀리·넓게 보이고, 잎에 가려도 새어 보임
+    const nk = Math.min(1, Math.max(0, this.night));
+    const range = V.flashRange + (NM.range - V.flashRange) * nk;
+    const halfFov = (V.fovDeg + (NM.fovDeg - V.fovDeg) * nk) / 2;
+    const visMin = V.flashVisibleMin + (NM.visibleMin - V.flashVisibleMin) * nk;
     for (const s of this.soldiers) {
       if (!s.alive || s.perception.seen) continue;
       const eye = s.eye;
       const dx = o.x - eye.x, dy = o.y - eye.y, dz = o.z - eye.z;
       const d = Math.hypot(dx, dy, dz);
-      if (d > V.flashRange) continue;
+      if (d > range) continue;
       const fx = -Math.sin(s.look.yaw), fz = -Math.cos(s.look.yaw);
       const hd = Math.hypot(dx, dz) || 1;
       const ang = Math.acos(Math.max(-1, Math.min(1, (dx * fx + dz * fz) / hd))) / DEG;
-      if (ang > V.fovDeg / 2) continue;
+      if (ang > halfFov) continue;
       const r = q.raycastWorld({ x: eye.x, y: eye.y, z: eye.z }, { x: dx, y: dy, z: dz }, Math.max(0.1, d - 0.3), 'vision');
       this.stats.rays++;
       const v = r.hit ? 0 : r.transmittance;
-      if (v < V.flashVisibleMin) continue;
+      if (v < visMin) continue;
       this.stats.flashes++;
       if (s.perception.flash(this.time)) s.onDetect(false);
     }
@@ -555,7 +678,10 @@ export class EnemyManager extends EventEmitter {
       const r = this._paths.shift();
       if (!r.s.alive || r.goal !== r.s.goal || !r.goal) continue;
       const d = Math.hypot(r.goal.x - r.s.motor.position.x, r.goal.z - r.s.motor.position.z);
-      const path = this.nav.findPath(r.s.motor.position, r.goal, { mode: r.mode, maxNodes: Math.min(CONFIG.ai.nav.maxNodes, 400 + d * d * 1.2) });
+      const opts = { mode: r.mode, maxNodes: Math.min(CONFIG.ai.nav.maxNodes, 400 + d * d * 1.2) };
+      let path = this.nav.findPath(r.s.motor.position, r.goal, opts);
+      // 6단계: 함정 둘레 비용 때문에 노드 예산 안에 못 찾으면 비용 없이 다시 (함정은 조향으로 비켜 감)
+      if (!path && this.nav.hazards.length) path = this.nav.findPath(r.s.motor.position, r.goal, { ...opts, ignoreHazards: true });
       this.stats.paths++;
       r.s.setPath(r.goal, path);
       budget--;

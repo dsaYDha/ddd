@@ -129,16 +129,27 @@ export class Squad {
     const p = soldier.motor.position;
     if (idx === 0) {
       const skip = this._skip ?? 0;
-      const ahead = this.routeAt(this.pointS + 4 + skip);
+      const ahead = this._offHazard(this.routeAt(this.pointS + 4 + skip));
       const end = this.pointS >= this.route.length - 1.5;
       return { x: ahead.x, z: ahead.z, pace: 'walk', intent, arrive: 0.6, hold: this._lag || end, farFromRoute: this._pointOff > 6 || skip > 0 };
     }
     let back = 0;
     for (let i = 1; i <= idx; i++) back += this.spacing[file[i].order] || 6;
     const s = Math.max(0, this.pointS - back);
-    const q = this.routeAt(s);
+    const q = this._offHazard(this.routeAt(s));
     const d = Math.hypot(q.x - p.x, q.z - p.z);
     return { x: q.x, z: q.z, pace: 'walk', intent: d > 4 ? 1 : intent, arrive: 1.0, hold: d < 1.2, farFromRoute: d > 10 };
+  }
+
+  /** 6단계: 경로 위 자리가 자기 편 지뢰·구덩이 바로 옆이면 옆으로 비킨 자리 (적은 함정 자리를 안다) */
+  _offHazard(q) {
+    const h = q && this.manager.nav?.nearHazard?.(q.x, q.z, 0.9);
+    if (!h) return q;
+    let ox = q.x - h.x, oz = q.z - h.z;
+    const ol = Math.hypot(ox, oz);
+    if (ol < 1e-3) { ox = 1; oz = 0; } else { ox /= ol; oz /= ol; }
+    const R = h.r + 1.1;
+    return { x: h.x + ox * R, z: h.z + oz * R };
   }
 
   _buildFile() {
@@ -310,6 +321,9 @@ export class Squad {
   }
 
   onDetect(soldier, surprised) {
+    // 6단계: 밤에 교전이 시작되면 조명탄
+    const tp = this.manager.target?.motor?.position;
+    if (tp && this.manager.night > 0.5) this.manager.requestFlare?.(this, tp);
     if (this.state === 'ambush') { this._checkAmbush(); return; }
     this.manager.shout(soldier, 'contact');
     if (this.state !== 'engaged') this.setState('engaged', { surprised });

@@ -5,18 +5,22 @@
 //     코끼리풀 개활지·대나무 숲·언덕(능선) 위 큰 나무 — 지도에 있는 것으로 말로 설명할 수 있는 곳만.
 //   · 정찰: 지형지물 2~3곳 확인 → 회수.  매복: 오솔길 구간에서 보급 행렬 기습 → 회수.  습격: 야영지 문서 회수 → 회수.
 //   · 회수 지점: 강가 모래톱 또는 논(개활지). 모든 목표·회수 지점은 길찾기 격자(NavGrid)로 실제 걸어서 닿는지 확인.
-//   · 브리핑의 적 규모는 ±30% 틀릴 수 있다. 해질녘 임무는 완전히 어두워지기 전에 제한 시간이 끝난다.
+//   · 브리핑의 적 규모는 ±30% 틀릴 수 있다.
+//   · 6단계: 시작 시각에 '밤' 추가, 해질녘 임무는 밤까지 이어질 수 있다 (5단계 제한 해제). 달 모양 (보름·반달·그믐).
+//     함정 계획 (TrapPlan.planTraps — 대부분 오솔길·논둑·야영지 접근로 길목, 숲속엔 드물게) → m.traps
 //  generateMission(type, seed, world) — world = { data, query, nav }
 // =====================================================================
 import { CONFIG, SURFACE_KEYS } from '../config.js';
 import { RNG } from '../core/rng.js';
 import { LAYOUT, riverCenterZ } from '../world/MapLayout.js';
 import { WeatherCycle } from './Weather.js';
+import { planTraps } from './TrapPlan.js';
 
 export const MISSION_TYPES = ['recon', 'ambush', 'raid'];
 export const MISSION_LABELS = { recon: '정찰', ambush: '매복', raid: '적 야영지 습격' };
-const TOD_KEYS = ['dawn', 'noon', 'dusk'];
-const TOD_LABELS = { dawn: '새벽', noon: '한낮', dusk: '해질녘' };
+const TOD_KEYS = ['dawn', 'noon', 'dusk', 'night'];
+const TOD_LABELS = { dawn: '새벽', noon: '한낮', dusk: '해질녘', night: '밤' };
+const MOON_KEYS = ['full', 'half', 'new'];
 const rr = (rng, r) => rng.range(r[0], r[1]);
 const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const SURF = (k) => SURFACE_KEYS.indexOf(k);
@@ -258,7 +262,7 @@ function trailPoints(world) {
 // ---------------------------------------------------------------------
 /** a → b 를 실제로 걸어서 갈 수 있는지 (경로 길이 m, 못 가면 Infinity) */
 export function pathLength(world, a, b) {
-  const path = world.nav.findPath(a, b, { mode: 'normal', maxNodes: 60000 });
+  const path = world.nav.findPath(a, b, { mode: 'normal', maxNodes: 60000, ignoreHazards: true });
   if (!path) return Infinity;
   let L = 0, px = a.x, pz = a.z;
   for (const p of path) { L += Math.hypot(p.x - px, p.z - pz); px = p.x; pz = p.z; }
@@ -319,23 +323,26 @@ function tryMission(type, seed, rng, world) {
   if (!Number.isFinite(Lx)) return null;
   total += Lx;
   m.routeLength = total;
-  // ---- 시각·제한 시간 (해질녘은 어두워지기 전에 끝나게)
+  // ---- 시각·제한 시간 (6단계: 해질녘 임무도 밤까지 이어질 수 있음) · 달 모양
   const tod = rng.pick(TOD_KEYS);
   m.tod = tod;
   m.startHour = M.startHours[tod] + rng.range(-0.15, 0.25);
+  {
+    let r = rng.range(0, 1), acc = 0;
+    m.moon = MOON_KEYS[MOON_KEYS.length - 1];
+    for (const k of MOON_KEYS) { acc += M.moon[k]; if (r <= acc) { m.moon = k; break; } }
+  }
   const [lo, hi] = M.limitMin[type];
   // 걷는 시간 (숲속 약 0.7m/s) 의 여유 + 기다림·교전 시간
-  let limitMin = Math.max(lo, Math.min(hi, total / 0.7 / 60 * 1.8 + (type === 'ambush' ? 16 : 8)));
-  if (tod === 'dusk') {
-    const maxMin = (M.duskEndHour - m.startHour) * 60 / M.timeScale;
-    limitMin = Math.min(limitMin, maxMin);
-  }
+  const limitMin = Math.max(lo, Math.min(hi, total / 0.7 / 60 * 1.8 + (type === 'ambush' ? 16 : 8)));
   m.limit = Math.round(limitMin) * 60;
   m.endHour = m.startHour + (m.limit * M.timeScale) / 3600;
   // ---- 날씨
   m.weatherPlan = WeatherCycle.makePlan(m.limit, rng);
   // ---- 흔적 (첫 목표 쪽으로 가는 길 위)
   placeTraces(m, rng, world);
+  // ---- 6단계: 함정 (길목 위주)
+  planTraps(m, rng, world, A);
   // ---- 지도 연필 표시
   for (const o of m.objectives) {
     if (o.kind === 'observe') m.marks.push({ kind: 'circle', x: o.x, z: o.z, r: 9, label: o.mapLabel });
@@ -587,6 +594,14 @@ function weatherLine(m) {
   return `기상: ${now}. ${when} 비 — 폭우와 뇌우 가능, 비가 그치면 안개`;
 }
 
+/** 밤·해질녘 임무: 달 모양과 어둠 안내 */
+function nightLine(m) {
+  const moon = CONFIG.night.moon[m.moon]?.label ?? '';
+  if (m.tod === 'night') return `밤 작전 — ${moon}. 캐노피 아래는 거의 보이지 않는다. 손전등과 총구 화염은 위치를 드러낸다. 적은 소리를 듣고 조명탄을 쏜다.`;
+  if (m.tod === 'dusk') return `해질녘 작전 — 곧 어두워진다 (${moon}). 밤까지 이어질 수 있다.`;
+  return '';
+}
+
 function briefing(m, rng) {
   const M = CONFIG.mission;
   const E = m.enemies;
@@ -612,6 +627,7 @@ function briefing(m, rng) {
     lines.push('야영지 위치는 대략적인 범위만 안다. 보초와 접근로 매복을 조심하라. 큰 교전이 벌어지면 근처의 증원이 온다.');
   }
   lines.push(`회수 지점: ${m.extraction.label}. 도착 후 60초를 버티면 헬기가 온다.`);
+  lines.push('적은 오솔길·논둑·야영지 접근로 같은 길목에 인계철선·꼬챙이 구덩이·지뢰를 놓는다. 빠른 길일수록 위험하다 — 천천히 살피고(X·앉기), 의심되면 탐침(Y).');
   return {
     title: `${MISSION_LABELS[m.type]} — 작전 #${String(m.seed).slice(-4).padStart(4, '0')}`,
     lines,
@@ -619,6 +635,7 @@ function briefing(m, rng) {
     limit: `제한 시간: ${Math.round(m.limit / 60)}분 (작전 시각 ${fmt(m.endHour)}까지)`,
     enemy: `적 규모: 약 ${est}명 추정 (정보가 틀릴 수 있음)`,
     weather: weatherLine(m),
-    equipment: ['7.62mm 소총', '탄창 6개 (30발)', '낱발 탄약 90발', '붕대 2', '지혈대 1', '종이 지도 · 손목 나침반 · 시계'],
+    night: nightLine(m),
+    equipment: ['7.62mm 소총', '탄창 6개 (30발)', '낱발 탄약 90발', '붕대 2', '지혈대 1', '수통 2 (1L씩)', '손전등', '종이 지도 · 손목 나침반 · 시계'],
   };
 }

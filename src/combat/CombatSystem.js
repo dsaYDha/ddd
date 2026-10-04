@@ -7,6 +7,9 @@
 //   · 'hit'       → 사수 명중 통계 + person.injuries.applyHit(e) (결과를 e.wound 에) + person.emit('hit', e)
 //   · 'nearPass'  가 머리·몸통 표면 바깥 injury.grazeDepth 안 → person.injuries.applyNearGraze (결과를 e.graze 에)
 //   Ballistics 이벤트('hit','impact','partial','foliage','nearPass','flyby','end')는 같은 이름·payload 로 다시 보낸다.
+//  6단계 explode(point, opts): 함정 폭발 — 소음 · 거리별 제압 (Suppression.add 'blast') · 파편 (실제 투사체, projectile.fragment,
+//   남은 속도 비율 traps.fragment.retained → 맞으면 3단계 저속 탄 규칙). 파편의 착탄·부분 관통은 소음을 내지 않는다 (폭음이 덮음).
+//   'explosion' {point, kind, fragments, trap, victim} 을 보낸다.
 //  게임 루프 순서: update(dt) 를 먼저(탄 이동·제압 감소) → 그다음 사수 갱신(발사). 발사된 탄은 fire 시점에
 //  timeOffset 만큼 미리 진행해 이번 프레임 끝 위치에 있다.
 import { CONFIG } from '../config.js';
@@ -15,6 +18,19 @@ import { RNG } from '../core/rng.js';
 import { Ballistics } from './Ballistics.js';
 import { BulletWorld, createFlatWorld } from './BulletWorld.js';
 import { People, Person } from './People.js';
+
+/** [[x, y], …] 표 선형 보간 (첫 x 이하 = 첫 y, 마지막 x 초과 = 0) */
+function tableLerp(table, x) {
+  if (!table?.length || !(x >= 0)) return table?.[0]?.[1] ?? 0;
+  if (x <= table[0][0]) return table[0][1];
+  for (let i = 1; i < table.length; i++) {
+    if (x <= table[i][0]) {
+      const [x0, y0] = table[i - 1], [x1, y1] = table[i];
+      return y0 + (y1 - y0) * ((x - x0) / (x1 - x0));
+    }
+  }
+  return 0;
+}
 
 export class CombatSystem extends EventEmitter {
   /**
@@ -68,6 +84,44 @@ export class CombatSystem extends EventEmitter {
     });
   }
 
+  /**
+   * 6단계: 폭발. opts: { fragments, speed: [lo, hi] m/s, elev: [lo, hi]° (지평 기준 고도각 — 사이를 입체각 균일하게),
+   *   noHit: Set (파편이 맞지 않을 사람), kind, trap, source (소음 주체 — 걸린 사람 motor), victim }
+   * @returns {{ fragments: number, point }}
+   */
+  explode(point, opts = {}) {
+    const T = CONFIG.traps, B = T.blast;
+    if (this.noise) this.noise.emitNoise(point, B.noise, 'explosion', opts.source ?? null, { blastKind: opts.kind ?? 'explosion', trap: opts.trap ?? null });
+    // 거리별 제압 (몸 중심까지 거리)
+    const list = this.people.list;
+    for (let i = 0; i < list.length; i++) {
+      const person = list[i];
+      const sup = person.suppression;
+      if (!sup || person.bounds.radius < 0) continue;
+      const c = person.bounds.center;
+      const d = Math.hypot(c.x - point.x, c.y - point.y, c.z - point.z);
+      const gain = tableLerp(B.suppression, d);
+      if (gain > 0) sup.add(gain, 'blast', { point: { ...point }, distance: d, kind: opts.kind });
+    }
+    // 파편
+    const n = Math.max(0, Math.round(opts.fragments ?? 0));
+    const w = CONFIG.weapons.fragment;
+    const sp = opts.speed ?? [600, 1000], el = opts.elev ?? [-5, 40];
+    const s0 = Math.sin(el[0] * Math.PI / 180), s1 = Math.sin(el[1] * Math.PI / 180);
+    const shooter = { name: '파편', isTrap: true, position: { x: point.x, y: point.y, z: point.z }, trap: opts.trap ?? null };
+    const origin = { x: point.x, y: point.y, z: point.z };
+    for (let i = 0; i < n; i++) {
+      const az = this.rng.range(0, Math.PI * 2);
+      const sy = this.rng.range(s0, s1), ch = Math.sqrt(Math.max(0, 1 - sy * sy));
+      const p = this.ballistics.fire({ origin, dir: { x: ch * Math.cos(az), y: sy, z: ch * Math.sin(az) }, speed: this.rng.range(sp[0], sp[1]), shooter, weapon: w, noHit: opts.noHit ?? null });
+      p.fragment = true;
+      p.retained = T.fragment.retained;
+    }
+    const e = { point: { ...point }, kind: opts.kind ?? 'explosion', fragments: n, trap: opts.trap ?? null, victim: opts.victim ?? null, shooter };
+    this.emit('explosion', e);
+    return e;
+  }
+
   /** 자세 갱신 → 탄 이동 → 제압 감소 */
   update(dt) {
     this.people.refresh();
@@ -116,8 +170,8 @@ export class CombatSystem extends EventEmitter {
   }
 
   _onImpact(e) {
-    // 물속 바닥 착탄은 보이지도 들리지도 않음 (수면 물보라가 이미 'impact')
-    if (!e.underwater) {
+    // 물속 바닥 착탄은 보이지도 들리지도 않음 (수면 물보라가 이미 'impact') · 6단계: 파편 착탄은 폭음이 덮음 (제압·소음 없음)
+    if (!e.underwater && !e.projectile?.fragment) {
       const B = CONFIG.ballistics;
       const near = this.people.within(e.point, B.nearImpactRadius);
       for (let i = 0; i < near.length; i++) {
@@ -131,7 +185,7 @@ export class CombatSystem extends EventEmitter {
   }
 
   _onPartial(e) {
-    this._impactNoise(e);
+    if (!e.projectile?.fragment) this._impactNoise(e);
     this.emit('partial', e);
   }
 

@@ -81,12 +81,12 @@ function step(sc, seconds, fn = null) {
 }
 
 // =====================================================================
-console.log('\n[1] 임무 생성: 3종 × 시드 6개 — 목표·회수 지점에 실제로 걸어서 닿음, 적 규모 ±30%, 해질녘은 어둡기 전 종료');
+console.log('\n[1] 임무 생성: 3종 × 시드 6개 — 목표·회수 지점에 실제로 걸어서 닿음, 적 규모 ±30%, (6단계) 밤 시작·해질녘 제한 해제');
 {
   const A = analyzeWorld(world);
   check(A.landmarks.length >= 15 && A.starts.length >= 4 && A.extractions.length >= 4 && A.camps.length >= 3,
     `지형지물 ${A.landmarks.length}곳 · 투입 후보 ${A.starts.length} · 회수 후보 ${A.extractions.length} · 야영지 후보 ${A.camps.length}`);
-  let ok = 0, total = 0, unreachable = [], estOk = 0, duskOk = 0, dusk = 0;
+  let ok = 0, total = 0, unreachable = [], estOk = 0, dusk = 0, duskLong = 0, night = 0;
   const seeds = [11, 22, 33, 44, 55, 66];
   for (const type of MISSION_TYPES) {
     for (const seed of seeds) {
@@ -98,12 +98,13 @@ console.log('\n[1] 임무 생성: 3종 × 시드 6개 — 목표·회수 지점�
       if (!Number.isFinite(pathLength(world, m.start, m.extraction))) good = false;
       if (good) ok++; else unreachable.push(`${type}/${seed}`);
       if (Math.abs(m.estimate - m.trueCount) <= Math.ceil(m.trueCount * 0.3) + 1) estOk++;
-      if (m.tod === 'dusk') { dusk++; if (m.endHour <= CONFIG.mission.duskEndHour + 1e-6) duskOk++; }
+      if (m.tod === 'dusk') { dusk++; if (m.limit >= CONFIG.mission.limitMin[type][0] * 60) duskLong++; }
+      if (m.tod === 'night') night++;
     }
   }
   check(ok === total, `목표·회수 지점 도달 가능 ${ok}/${total}${unreachable.length ? ' (안 됨: ' + unreachable.join(', ') + ')' : ''}`);
   check(estOk === total, `브리핑 적 규모 오차 ±30% 안 ${estOk}/${total}`);
-  check(duskOk === dusk, `해질녘 임무 ${dusk}개 모두 ${CONFIG.mission.duskEndHour}시 전에 제한 시간 끝 (${duskOk}/${dusk})`);
+  check(duskLong === dusk && night > 0, `6단계: 밤 시작 임무 ${night}개 · 해질녘 임무 ${dusk}개 모두 제한 시간이 잘리지 않음 (밤까지 이어짐, ${duskLong}/${dusk})`);
   const m2 = generateMission('recon', 5, world), m3 = generateMission('recon', 6, world);
   check(m2.objectives.map((o) => o.label).join() !== m3.objectives.map((o) => o.label).join() || m2.start.label !== m3.start.label,
     `시드마다 배치가 다름 (5: ${m2.objectives.map((o) => o.label).join(' / ')} | 6: ${m3.objectives.map((o) => o.label).join(' / ')})`);

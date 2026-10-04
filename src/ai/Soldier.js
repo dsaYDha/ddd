@@ -323,6 +323,7 @@ export class Soldier extends HumanEntity {
         const est = this.manager.estimate(evt, pos, this.rng, crack);
         if (!(this.perception.seen)) this._remember(est.x, evt.y, est.z, est.error * 1.5 + (crack ? est.distance * 0.3 : 3), 'heard');
         sq.onHeardShot(this, est, evt);
+        this.manager.requestFlare?.(sq, est);   // 6단계: 밤이면 조명탄으로 확인
       } else if (evt.squad !== sq) {
         sq.onAlliedAlarm(this, evt);
       }
@@ -330,6 +331,14 @@ export class Soldier extends HumanEntity {
     }
     if (evt.kind === 'shout') {
       if (evt.squad !== sq) sq.onAlliedAlarm(this, evt);
+      return;
+    }
+    // 6단계: 함정이 터짐 — 누군가 우리 함정에 걸렸다 (총성처럼 경계하고 그쪽을 확인)
+    if (evt.kind === 'explosion') {
+      const est = this.manager.estimate(evt, pos, this.rng, false);
+      if (!this.perception.seen) this._remember(est.x, evt.y, est.z, est.error * 1.5 + 4, 'heard');
+      sq.onHeardShot(this, est, evt);
+      this.manager.requestFlare?.(sq, est);
       return;
     }
     if (!fromTarget) return;
@@ -342,6 +351,8 @@ export class Soldier extends HumanEntity {
     const est = this.manager.estimate(evt, pos, this.rng, false);
     if (!this.perception.seen) this._remember(est.x, evt.y, est.z, est.error * 1.5 + 2, 'heard');
     sq.onSuspicious(this, est, evt.kind);
+    // 6단계: 밤엔 눈보다 귀 — 또렷한 소리(걷는 발소리 이상)를 들으면 조명탄으로 확인
+    if ((evt.radius ?? 0) >= CONFIG.night.flare.hearNoiseMin) this.manager.requestFlare?.(sq, est);
   }
 
   /** 근접 탄 ('딱') — 방향 헷갈림 시작 + 분대 경계 */
@@ -962,6 +973,26 @@ export class Soldier extends HumanEntity {
       if (Math.abs(lat) > c.r + 0.42) return;
       if (t < bestT) { bestT = t; best = { c, lat }; }
     });
+    // 6단계: 자기 편 지뢰·구덩이 (자리를 안다) — 줄기처럼 비켜 감, 너무 가까우면 바로 멀어지는 쪽으로
+    const hz = this.manager.nav.hazards;
+    if (hz && hz.length) {
+      const SR = CONFIG.traps.avoid.steerRadius;
+      for (const h of hz) {
+        const ox = h.x - p.x, oz = h.z - p.z;
+        if (Math.abs(ox) > look + SR + 1 || Math.abs(oz) > look + SR + 1) continue;
+        const dd = Math.hypot(ox, oz);
+        if (dd < h.r + 0.3) {
+          const l = dd || 1;
+          return { x: -ox / l, z: -oz / l };
+        }
+        const t = ox * dx + oz * dz;
+        const r = h.r + SR - 0.42;
+        if (t < -0.2 || t > look + r) continue;
+        const lat = ox * rx + oz * rz;
+        if (Math.abs(lat) > r + 0.42) continue;
+        if (t < bestT) { bestT = t; best = { c: { r }, lat }; }
+      }
+    }
     if (!best) return null;
     const side = best.lat > 0 ? -1 : 1;           // 장애물이 오른쪽이면 왼쪽으로
     const w = 1 - Math.min(1, Math.max(0, bestT) / (look + best.c.r));

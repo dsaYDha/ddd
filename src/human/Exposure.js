@@ -1,4 +1,6 @@
 // 노출도 (0~1): 자세 · 주변 식생 은폐 · 빛 — 4단계 적 시야 판정용
+//  6단계: light.ambient (그 자리 빛 수준 — 낮 1, 밤엔 달·트임에 따라 0.01~0.3) 를 빛 계수 전체에 곱하고,
+//         light.extra (조명탄·적 손전등에 비친 인공 빛 0~1) 를 더한다. 둘 다 없으면 5단계와 같다.
 import { CONFIG } from '../config.js';
 import { clamp, lerp, smoothstep } from '../core/math.js';
 
@@ -7,7 +9,7 @@ const SAMPLES = [[0, 0, 2], [1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [0.7, 
 /**
  * @param {import('./HumanMotor.js').HumanMotor} motor
  * @param {import('../world/WorldQuery.js').WorldQuery} query
- * @param {{daylight:number, sunOffset:{x:number,z:number}}} light  현재 조명 상태
+ * @param {{daylight:number, sunOffset:{x:number,z:number}, ambient?:number, extra?:number}} light  현재 조명 상태
  */
 export function computeExposure(motor, query, light) {
   const E = CONFIG.exposure;
@@ -34,11 +36,14 @@ export function computeExposure(motor, query, light) {
   const skyCover = query.getCanopyCover(motor.position.x, motor.position.z);
   const sunLit = 1 - smoothstep(0.28, 0.82, sunCover);
   const lit = clamp((sunLit * 0.6 + (1 - skyCover * 0.7) * 0.4) * light.daylight, 0, 1);
-  const lightF = lerp(E.lightMin, 1, lit);
+  const amb = light.ambient ?? 1, extra = light.extra ?? 0;
+  const lightF = clamp(Math.max(lerp(E.lightMin, 1, lit) * amb, extra), 0, 1);
 
   let exposure = stanceF * (1 - conceal * 0.9) * lightF;
-  if (motor.ground.onDike) exposure += E.elevatedBonus;
-  exposure += E.movingBonus * clamp(motor.speed / 3, 0, 1);
+  // 논둑 위·움직임도 빛이 있어야 보인다 (밤엔 그만큼 작게)
+  const litK = clamp(Math.max(amb, extra), 0, 1);
+  if (motor.ground.onDike) exposure += E.elevatedBonus * litK;
+  exposure += E.movingBonus * clamp(motor.speed / 3, 0, 1) * litK;
   return {
     value: clamp(exposure, 0, 1),
     stance: stanceF, concealment: conceal, light: lightF,

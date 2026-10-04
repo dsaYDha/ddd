@@ -72,6 +72,7 @@ export class HumanMotor extends EventEmitter {
     this.effort = 0;
     this.drainRate = 0;
     this.regenRate = 0;
+    this.regenMul = 1;                    // 6단계: 피로·갈증이 스태미나 회복을 늦춤 (Endurance.apply)
 
     // 걸음
     this.gait = 'idle';
@@ -685,6 +686,7 @@ export class HumanMotor extends EventEmitter {
       regen = S.regen.idle;
     }
     if (this.sliding) drain += S.slipStruggleDrain;
+    regen *= this.regenMul ?? 1;
     this.drainRate = drain;
     this.regenRate = regen;
     this.stamina = clamp(this.stamina + (regen - drain) * dt, 0, Math.min(S.max, this.caps.maxStamina));

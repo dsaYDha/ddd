@@ -6,6 +6,8 @@
 //       mode 'patrol': 오솔길 칸 비용 × trailMul (평소에는 길을 선호)
 //       mode 'combat': 트인 칸 비용 × (1 + combatExposureMul × (1 − 은폐)) (몸을 숨길 수 있는 경로)
 //     결과는 직선으로 걸을 수 있는 구간을 이어 줄인 월드 좌표 경유점 [{x, z}].
+//   · 6단계 setHazards([{x,z,r}]) — 자기 편 지뢰·구덩이: 둘레 칸 비용 + traps.avoid.navCost, 직선 잇기도 그 자리를 피함
+//     (임무 생성의 도달 확인은 opts.ignoreHazards 로 무시)
 //   · findCover(위치, 위협, opts) — 마지막으로 확인한 위협 방향을 막는 엄폐물 (총알을 막는 줄기·통나무·바위 = bulletBlock full)
 //     뒤 숨는 점·옆 내다보는 점. 없거나 모자라면 2순위로 숨기만 되는 수풀 (몸높이 은폐 ≥ cover.concealMin).
 // =====================================================================
@@ -33,6 +35,8 @@ export class NavGrid {
     this.cost = new Float32Array(n2);      // 칸 비용 (m 당) — 0 이면 막힘
     this.trail = new Uint8Array(n2);
     this.conceal = new Uint8Array(n2);     // 몸높이 은폐 × 255
+    this.hazard = new Float32Array(n2);    // 6단계: 자기 편 함정 둘레 추가 비용 (적 길찾기)
+    this.hazards = [];
     // A* 작업 버퍼
     this._g = new Float32Array(n2);
     this._from = new Int32Array(n2);
@@ -148,9 +152,34 @@ export class NavGrid {
   // -----------------------------------------------------------------
   // A*
   // -----------------------------------------------------------------
+  /** 6단계: 적이 비켜 갈 함정 자리 [{x, z, r}] (빈 배열이면 해제) */
+  setHazards(list = []) {
+    const A = CONFIG.traps.avoid, cs = this.cell, n = this.n;
+    this.hazard.fill(0);
+    this.hazards = list.map((h) => ({ x: h.x, z: h.z, r: h.r ?? 0.4 }));
+    for (const h of this.hazards) {
+      const R = h.r + A.navRadius;
+      const i0 = this._ci(h.x - R), i1 = this._ci(h.x + R), j0 = this._ci(h.z - R), j1 = this._ci(h.z + R);
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          // 칸(정사각형)과 원이 겹치나
+          const cx = -this.half + (i + 0.5) * cs, cz = -this.half + (j + 0.5) * cs;
+          const dx = Math.max(0, Math.abs(h.x - cx) - cs / 2), dz = Math.max(0, Math.abs(h.z - cz) - cs / 2);
+          if (dx * dx + dz * dz <= R * R) this.hazard[j * n + i] += A.navCost;
+        }
+      }
+    }
+  }
+
+  /** 점이 함정 둘레(r + extra) 안인가 */
+  nearHazard(x, z, extra = CONFIG.traps.avoid.steerRadius * 0.6) {
+    for (const h of this.hazards) if (Math.hypot(h.x - x, h.z - z) < h.r + extra) return h;
+    return null;
+  }
+
   /**
    * @param {{x,z}} a  시작   @param {{x,z}} b  끝
-   * @param {{ mode?: 'patrol'|'combat'|'normal', maxNodes?: number }} opts
+   * @param {{ mode?: 'patrol'|'combat'|'normal', maxNodes?: number, ignoreHazards?: boolean }} opts
    * @returns {Array<{x,z}>|null}  경유점 (첫 점 = 시작 다음, 마지막 = 끝)
    */
   findPath(a, b, opts = {}) {
@@ -166,6 +195,7 @@ export class NavGrid {
     const gi = g % n, gj = (g / n) | 0;
     const trailMul = N.trailMul, expMul = N.combatExposureMul;
     const minMul = mode === 'patrol' ? trailMul : 1;
+    const hz = !opts.ignoreHazards && this.hazards.length ? this.hazard : null;
     const H = (k) => {
       const di = Math.abs(k % n - gi), dj = Math.abs(((k / n) | 0) - gj);
       return (Math.max(di, dj) + (SQRT2 - 1) * Math.min(di, dj)) * minMul * 0.95;
@@ -220,6 +250,7 @@ export class NavGrid {
         let cm = c;
         if (mode === 'patrol' && this.trail[nk]) cm *= trailMul;
         else if (mode === 'combat') cm *= 1 + expMul * (1 - this.conceal[nk] / 255);
+        if (hz) cm += hz[nk];
         const ng = G[k] + cm * DIRS[d][2];
         if (seen[nk] !== stamp || ng < G[nk]) {
           seen[nk] = stamp; G[nk] = ng; F[nk] = k;
@@ -237,22 +268,24 @@ export class NavGrid {
     const pts = cells.map((k) => this.centerOf(k, { x: 0, z: 0 }));
     pts[pts.length - 1] = { x: b.x, z: b.z };
     if (!this.walkable(b.x, b.z)) pts[pts.length - 1] = this.centerOf(g, { x: 0, z: 0 });
-    return this._smooth({ x: a.x, z: a.z }, pts, mode);
+    return this._smooth({ x: a.x, z: a.z }, pts, mode, !!hz);
   }
 
   /**
    * 직선 a→b 가 막힌 칸·크게 비싼 칸(진흙 2배 이상 차이)을 지나지 않고, 몸(반경 bodyR)이 줄기에 걸리지 않는지.
    * 칸(2m)보다 작은 줄기는 칸을 막지 않으므로 직선 구간마다 원기둥 충돌체를 따로 본다.
    */
-  lineWalkable(a, b, maxCost = Infinity, bodyR = 0.32) {
+  lineWalkable(a, b, maxCost = Infinity, bodyR = 0.32, hazards = this.hazards.length > 0) {
     const d = Math.hypot(b.x - a.x, b.z - a.z);
     const steps = Math.max(1, Math.ceil(d / 0.5));
     const grid = this.query.circleGrid;
     for (let s = 1; s <= steps; s++) {
       const t = s / steps;
       const x = a.x + (b.x - a.x) * t, z = a.z + (b.z - a.z) * t;
-      const c = this.cost[this.index(x, z)];
+      const k = this.index(x, z);
+      const c = this.cost[k];
       if (!(c > 0) || c > maxCost) return false;
+      if (hazards && this.hazard[k] > 0 && this.nearHazard(x, z, bodyR + 0.35)) return false;
       const list = grid.at(x, z);
       for (let k = 0; k < list.length; k++) {
         const o = list[k];
@@ -263,7 +296,7 @@ export class NavGrid {
     return true;
   }
 
-  _smooth(start, pts, mode) {
+  _smooth(start, pts, mode, hazards = false) {
     if (pts.length <= 2) return pts;
     const out = [];
     let cur = start, i = 0;
@@ -272,7 +305,7 @@ export class NavGrid {
       const maxLook = mode === 'patrol' ? 4 : 12;
       let j = Math.min(pts.length - 1, i + maxLook);
       const curCost = this.cost[this.index(cur.x, cur.z)];
-      for (; j > i; j--) if (this.lineWalkable(cur, pts[j], Math.max(curCost, 1.5) * 1.6)) break;
+      for (; j > i; j--) if (this.lineWalkable(cur, pts[j], Math.max(curCost, 1.5) * 1.6, 0.32, hazards)) break;
       out.push(pts[j]);
       cur = pts[j];
       i = j + 1;

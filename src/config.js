@@ -207,6 +207,8 @@ export const CONFIG = {
     weaponMech: 6,            // 탄창 분리·결합, 노리쇠
     dryFire: 3,               // 빈 약실·고장 '딸깍'
     thunderMask: 0.8,         // 5단계: 천둥이 겹친 순간 총성 반경 감소 비율 (×thunderMask 0~1)
+    // 6단계: 밤 개구리·벌레 소리가 작은 소리(반경 smallRadius m 이하)를 가림 — 반경 × (1 − nightMask × 밤 환경음 세기)
+    nightMask: 0.22, smallRadius: 30,
   },
 
   // 노출도 (0~1) — 4단계 적 시야용
@@ -277,6 +279,7 @@ export const CONFIG = {
     transitionRate: 0.35,     // 비 강도·안개 전환 속도 (1/s)
   },
 
+  // light: 6단계 — 그 시간대의 낮 빛 비율 (적 시야·함정 발견·노출도). 1 − light 만큼 밤 빛(달·트임)으로 바뀜
   timeOfDay: {
     presets: {
       dawn: {
@@ -285,7 +288,7 @@ export const CONFIG = {
         skyColor: [0.62, 0.68, 0.72], groundColor: [0.2, 0.19, 0.14], hemiIntensity: 1.3,
         fogColor: [0.6, 0.64, 0.64], fogDensity: 0.015, mist: 0.012,
         skyTop: [0.42, 0.52, 0.62], skyHorizon: [0.78, 0.74, 0.68], exposure: 1.2,
-        ambienceDawn: 1, ambienceDay: 0.3, ambienceDusk: 0,
+        ambienceDawn: 1, ambienceDay: 0.3, ambienceDusk: 0, ambienceNight: 0, light: 0.85,
       },
       noon: {
         label: '한낮', sunElevation: 68, sunAzimuth: 160,
@@ -293,7 +296,7 @@ export const CONFIG = {
         skyColor: [0.66, 0.74, 0.8], groundColor: [0.22, 0.21, 0.15], hemiIntensity: 1.6,
         fogColor: [0.66, 0.71, 0.7], fogDensity: 0.0085, mist: 0.004,
         skyTop: [0.36, 0.52, 0.72], skyHorizon: [0.76, 0.8, 0.8], exposure: 1.0,
-        ambienceDawn: 0.2, ambienceDay: 1, ambienceDusk: 0,
+        ambienceDawn: 0.2, ambienceDay: 1, ambienceDusk: 0, ambienceNight: 0, light: 1,
       },
       dusk: {
         label: '해질녘', sunElevation: 7, sunAzimuth: 255,
@@ -301,16 +304,16 @@ export const CONFIG = {
         skyColor: [0.56, 0.48, 0.48], groundColor: [0.17, 0.14, 0.11], hemiIntensity: 1.05,
         fogColor: [0.5, 0.42, 0.38], fogDensity: 0.013, mist: 0.01,
         skyTop: [0.3, 0.32, 0.45], skyHorizon: [0.86, 0.56, 0.38], exposure: 1.2,
-        ambienceDawn: 0, ambienceDay: 0.35, ambienceDusk: 1,
+        ambienceDawn: 0, ambienceDay: 0.35, ambienceDusk: 1, ambienceNight: 0, light: 0.8,
       },
-      // 5단계: 시계가 흐르며 그 사이를 보간 — 동트기 전 / 해가 진 뒤 어스름 (완전한 밤은 6단계)
+      // 5단계: 시계가 흐르며 그 사이를 보간 — 동트기 전 / 해가 진 뒤 어스름 / 6단계: 밤
       predawn: {
         label: '동트기 전', hidden: true, sunElevation: -2, sunAzimuth: 72,
         sunColor: [0.7, 0.6, 0.62], sunIntensity: 0.35,
         skyColor: [0.42, 0.48, 0.56], groundColor: [0.12, 0.12, 0.1], hemiIntensity: 0.75,
         fogColor: [0.42, 0.46, 0.5], fogDensity: 0.017, mist: 0.014,
         skyTop: [0.2, 0.26, 0.38], skyHorizon: [0.52, 0.5, 0.52], exposure: 1.45,
-        ambienceDawn: 0.6, ambienceDay: 0, ambienceDusk: 0.3,
+        ambienceDawn: 0.6, ambienceDay: 0, ambienceDusk: 0.3, ambienceNight: 0.5, light: 0.38,
       },
       twilight: {
         label: '어스름', hidden: true, sunElevation: -3, sunAzimuth: 262,
@@ -318,11 +321,20 @@ export const CONFIG = {
         skyColor: [0.36, 0.34, 0.42], groundColor: [0.1, 0.09, 0.08], hemiIntensity: 0.6,
         fogColor: [0.32, 0.3, 0.34], fogDensity: 0.016, mist: 0.012,
         skyTop: [0.14, 0.16, 0.28], skyHorizon: [0.5, 0.36, 0.32], exposure: 1.5,
-        ambienceDawn: 0, ambienceDay: 0, ambienceDusk: 1,
+        ambienceDawn: 0, ambienceDay: 0, ambienceDusk: 1, ambienceNight: 0.45, light: 0.3,
+      },
+      // 6단계: 밤 — '해'는 달 (방향광 세기·하늘빛은 달 모양 night.moon 배율). 캐노피 아래는 거의 칠흑, 트인 곳만 조금 밝다
+      night: {
+        label: '밤', sunElevation: 38, sunAzimuth: 210, moon: true,
+        sunColor: [0.62, 0.72, 1.0], sunIntensity: 0.62,
+        skyColor: [0.12, 0.15, 0.24], groundColor: [0.02, 0.022, 0.026], hemiIntensity: 0.22,
+        fogColor: [0.03, 0.038, 0.052], fogDensity: 0.012, mist: 0.011,
+        skyTop: [0.008, 0.012, 0.03], skyHorizon: [0.03, 0.04, 0.065], exposure: 1.35,
+        ambienceDawn: 0, ambienceDay: 0, ambienceDusk: 0.15, ambienceNight: 1, light: 0,
       },
     },
-    // 시계 → 시간대 (시각 h 의 키 사이 보간)
-    clock: [[4.9, 'predawn'], [6.0, 'dawn'], [11.5, 'noon'], [13.2, 'noon'], [17.6, 'dusk'], [18.8, 'twilight']],
+    // 시계 → 시간대 (시각 h 의 키 사이 보간, 24시를 넘으면 0시부터 — 6단계: 밤까지 이어짐)
+    clock: [[0, 'night'], [4.2, 'night'], [4.9, 'predawn'], [6.0, 'dawn'], [11.5, 'noon'], [13.2, 'noon'], [17.6, 'dusk'], [18.8, 'twilight'], [19.6, 'night'], [24, 'night']],
   },
 
   // ------------------------------------------------------------------
@@ -527,6 +539,14 @@ export const CONFIG = {
       suppressionMul: 1.35,         // 근접 통과 제압 증가 배율 (무거운 탄·연사)
       bipodSuppressionMul: 1.3,     // 양각대 거치 사격이면 추가 배율 → '거치 사격 시 강한 제압'
       sound: { rate: 0.9, boom: 1.45, lpMul: 0.9, crack: 1.2 },
+    },
+    // 6단계: 함정 파편 (총이 아님 — CombatSystem.explode 가 쏨). 큰 공기 저항으로 30m 안에서 힘을 잃는다.
+    //  맞으면 3단계 '저속 탄' 규칙 (traps.fragment.retained < injury.lowSpeedRatio): 치명 부위 → 가슴 중상, 나머지 → 스침
+    fragment: {
+      label: '파편', caliber: 'fragment', family: 'explosive', pickup: false, fragment: true,
+      muzzleVelocity: 900, dragK: 0.06, dispersionMOA: 0, tracer: false,
+      suppressionMul: 0.12,       // 파편 하나하나의 근접 통과 제압 (폭발 자체가 traps.blast.suppression 으로 크게 줌)
+      sound: { rate: 1, boom: 0, lpMul: 1, crack: 0 },
     },
     // 탄창 확인 결과 (탄창의 남은 비율 이상이면 그 표시) — 숫자는 보여주지 않는다
     magCheckLabels: [[0.8, '가득'], [0.4, '절반쯤'], [0.12, '조금'], [0, '거의 없음']],
@@ -867,8 +887,8 @@ export const CONFIG = {
     handsRaise: 1.0,          // 종이 지도·손목 나침반을 꺼내고 넣는 시간 (s, 각각)
     handsSpeed: 0.9,          // 지도·나침반을 든 동안 최고 속도 (m/s — 느린 걸음)
     timeScale: 4,                              // 게임 시각 = 실제의 4배
-    startHours: { dawn: 5.6, noon: 11.4, dusk: 16.5 },
-    duskEndHour: 18.75,                        // 해질녘 시작 임무는 이 시각(완전히 어둡기 전) 전에 제한 시간이 끝남
+    startHours: { dawn: 5.6, noon: 11.4, dusk: 16.5, night: 21.2 },   // 6단계: 밤 추가 · 해질녘 임무는 밤까지 이어질 수 있다 (5단계 제한 해제)
+    moon: { full: 0.3, half: 0.4, new: 0.3 },  // 6단계: 임무마다 달 모양 (뽑힐 비율)
     limitMin: { recon: [26, 36], ambush: [30, 40], raid: [30, 40] },   // 제한 시간 (실제 분)
     observe: { radius: 25, time: 5, coneDeg: 24 },                     // 정찰 지점 확인: 25m 안에서 5초 바라보기
     extraction: { radius: 15, hold: 60, fade: 4 },                     // 회수 지점: 도착 후 60초 버티면 헬기
@@ -888,6 +908,118 @@ export const CONFIG = {
   },
   // 발자국: 진흙·젖은 흙을 밟으면 남음 (적·플레이어 모두). life 초에 걸쳐 흐려지고, 비가 오면 × (1 + rainMul × 비)
   footprints: { surfaces: ['wetEarth', 'shallowMud', 'deepMud'], life: 600, rainMul: 4, cap: 900, drawDistance: 45, drawCap: 360, findRadius: 6, followRadius: 12 },
+
+  // ==================================================================
+  //  6단계: 부비트랩·지뢰 — 디렉터가 임무마다 길목(오솔길·논둑·야영지 접근로)에 놓고, 빽빽한 숲속엔 드물게.
+  //   적은 자기 편 함정 자리를 알고 비켜 간다 (지뢰·구덩이는 길찾기·조향으로 돌아가고, 철선은 조심히 넘음 — 터뜨리지 않음).
+  // ==================================================================
+  traps: {
+    // 인계철선 폭발물: 발목 높이(height) 철선을 건드리면 fuse 초 뒤 길가 말뚝의 폭약이 터짐 — 파편 fragments 개, 고도각 elev ° 사이
+    tripwire: { fuse: 1.0, height: 0.12, length: [2.4, 3.4], chargeHeight: 0.35, fragments: 130, speed: [550, 1050], elev: [-8, 38] },
+    // 꼬챙이 구덩이: 낙엽으로 덮은 구덩이 (반경 m) — 빠지면 하퇴 부상 (3단계) + stuck 초 동안 못 움직이고 기어 나옴
+    spikePit: { radius: 0.42, stuck: 4, depth: 0.7 },
+    // 매설 지뢰: 밟으면 그 다리 대퇴 중상 (동맥 확률 arterial) + 둘레 파편 (밟은 사람은 파편 대신 대퇴 상처)
+    mine: { radius: 0.3, fragments: 90, speed: [500, 950], elev: [3, 62], arterial: 0.6 },
+    fragment: { retained: 0.3 },     // 파편의 남은 속도 비율 → injury.lowSpeedRatio(0.4) 미만이라 저속 탄 규칙
+    // 폭발: 섬광·흙·파편·큰 소리 (소음 반경 noise m) · 거리별 제압 ([거리 m, 증가] 표, 사이 선형 — 2단계 Suppression.add)
+    //  화면 흔들림·이명은 shakeRadius · tinnitusRadius m 안
+    blast: { noise: 1100, suppression: [[2, 100], [5, 80], [10, 45], [18, 20], [26, 6]], shakeRadius: 30, tinnitusRadius: 9 },
+    // ---- 배치 (임무마다): 개수, 숲속 비율, 함정끼리 간격, 투입 지점·목표·회수 지점·매복 대기 구간에서 떨어뜨릴 거리 (m)
+    count: { recon: [6, 9], ambush: [5, 8], raid: [8, 11] },
+    forestShare: 0.12,
+    spacing: 22,
+    avoidStart: 45, avoidObjective: 10, avoidExtraction: 24, avoidAmbushSite: 30,
+    // 길목 가중치: 오솔길 1 × (갈림길·여울 junctionRadius m 안) × (플레이어 예상 경로 routeRadius m 안 route, 밖 offRoute) · 논둑 · 야영지 접근로
+    weights: { trail: 1, junction: 2.2, ford: 2.2, route: 2, offRoute: 0.6, offRouteDike: 0.35, dike: 2.4, approach: 3.4 },
+    junctionRadius: 15, routeRadius: 55,
+    approachCount: [2, 3], approachSpacing: 8,     // 습격: 야영지 접근로에 먼저 2~3개 (접근로끼리는 8m 간격)
+    kinds: {                          // 자리별 종류 비율
+      trail: { tripwire: 0.45, spikePit: 0.3, mine: 0.25 },
+      dike: { mine: 0.55, spikePit: 0.45 },
+      approach: { tripwire: 0.5, mine: 0.3, spikePit: 0.2 },
+      forest: { tripwire: 0.4, spikePit: 0.3, mine: 0.3 },
+    },
+    markerChance: 0.65, markerDist: [2.5, 5],   // 적의 표시 (묶은 풀·꺾은 가지·막대 표식): 함정 앞 m 길가
+    // ---- 발견 (플레이어): radius m 안 함정을 알아채는 비율 (/s) = rate[걸음] × (1 − d/radius) × 시선 × 단서 × 빛 × 날씨
+    //  (3m 앞에서부터 다가가면: 조용히 걷기 약 85% · 앉아 걷기 약 80% · 보통 걸음 약 20% · 달리기 약 1%)
+    detect: {
+      radius: 3,
+      rate: { sprint: 0.02, walk: 0.24, quiet: 1.3, crouch: 1.1, prone: 0.9, idle: 0.55 },
+      centerDeg: 42, edgeDeg: 75, edgeMul: 0.35, outMul: 0.04,   // 시선(카메라 정면)과 함정 방향 사이 각
+      clue: { wire: 0.9, leaves: 1.0, dirt: 1.1 },               // 철선 · 부자연스러운 낙엽 더미 · 새로 판 흙
+      marker: 1.5, markerRange: 8,    // 근처에 적 표시(묶은 풀·꺾은 가지)가 있으면
+      rainWire: 1.4,                  // 비에 젖어 물방울이 맺힌 철선
+      glint: 1.7, glintRange: 1.6, glintLight: 0.5,   // 1.6m 안에서 빛(햇빛·손전등·조명탄 ≥ 0.5)을 받은 철선이 반짝임
+      darkMul: 0.16,                  // 빛 0 이면 × darkMul, 빛 1 이면 ×1
+      tick: 0.2,
+    },
+    probe: { time: 2, from: 0.3, reach: 1.0, sweep: 0.35, moveCancel: 0.15 },   // Y 길게: 발 앞 from~reach m 땅을 좌우 sweep m 로 찔러 지뢰·구덩이 확인
+    disarm: { time: 5, failChance: 0.1, range: 1.6, moveCancel: 0.15 }, // F: 알아챈 인계철선 해제 (팔 부상이면 불가, 실패 = 폭발)
+    avoid: { navCost: 6, navRadius: 0.9, steerRadius: 1.15 },           // 적: 지뢰·구덩이 둘레 칸 길찾기 추가 비용 · 조향으로 비켜 가는 반경
+  },
+
+  // ==================================================================
+  //  6단계: 밤 전투 — 달·암순응·조명탄·손전등·총구 화염. 적 시야는 빛 수준만큼 줄고 소리에 더 의존한다. 야간투시경 없음
+  // ==================================================================
+  night: {
+    moon: {                           // light: 달빛 배율 (방향광·하늘빛·밤 빛 수준)
+      full: { label: '보름달', light: 1.0 },
+      half: { label: '반달', light: 0.45 },
+      new: { label: '그믐 (달 없음)', light: 0.07 },
+    },
+    // 밤 빛 수준 (적 시야·함정 발견·노출도의 빛): 트인 곳 open × 달빛, 캐노피 아래 canopy × 달빛, 별빛 star (낮 = 1)
+    ambient: { open: 0.32, canopy: 0.045, star: 0.012 },
+    twilightDeg: [-7, 4],             // 해 고도가 이 사이면 낮 빛 → 밤 빛으로 섞임 (°)
+    // 암순응: 어둠(장면 빛 < darkBelow) 속 시간상수 tau 초로 순응도 0→1 (30~60초면 거의 다), 화면 노출 × (1 + gain × 순응도).
+    //  밝은 빛을 정면으로 보면 깨짐: 내 사격 ownShot, 시야 lookDeg° 안 적 총구 화염 enemyFlash(flashRange m 안), 조명탄 flareLook, 손전등 lampLook
+    adapt: { tau: 16, gain: 2.6, darkBelow: 0.35, loseTau: 0.5, ownShot: 0.3, enemyFlash: 0.14, flashRange: 80, flareLook: 0.85, lampLook: 0.5, lookDeg: 16 },
+    // 조명탄: 적 분대가 (밤에) 소리를 듣거나 교전이 시작되면 쏨 — height m 에서 낙하산으로 fall m/s, 흔들리며 life 초
+    flare: {
+      life: 40, height: [120, 165], fall: 3.3, sway: [3, 6], swayPeriod: [4, 6.5], drift: 0.5, riseTime: 2.5,
+      perSquad: 2, cooldown: 45, delay: [1.5, 4], hearNoiseMin: 10,
+      light: 1.0, range: 320, flicker: 0.16,   // 빛 수준: 바로 아래 1 → range m(지면 거리) 에서 0 (1 − (d/range)²) · 깜빡임 ±
+    },
+    // 손전등 (L): 앞 range m 를 원뿔 반각 angle° 로 밝힘. 켜 두면 visible m 밖에서도 위치가 드러남 (적 발견 수치 크게 상승)
+    flashlight: { range: 38, angle: 24, visible: 170, detectRate: 2.4, beamMul: 2.2, light: 0.9 },
+    // 총구 화염: 밤에는 이 거리·시야각까지 보이고, 잎에 가려도 조금 새어 보임 (낮: ai.vision.flashRange 220m · 120°)
+    muzzle: { range: 520, fovDeg: 170, visibleMin: 0.004 },
+    // 적 손전등: 밤 순찰 분대가 이 확률로 가린 손전등 count 개 — 발 앞 pool m 를 흐리게 비춤 (플레이어가 먼저 볼 수도)
+    enemyLamp: { chance: 0.45, count: [1, 2], pool: 6, range: 16, angle: 28, light: 0.55 },
+    // 적 청각: 밤에는 들은 소리를 더 믿고(조사 반경 × investigateMul) 조명탄으로 확인
+    hearing: { investigateMul: 1.4 },
+    fireflies: { count: 160, radius: 30 },
+  },
+
+  // ==================================================================
+  //  6단계: 몸 — 피로·갈증 (1단계 스태미나와 별개인 긴 수치). 숫자 없이 숨소리·화면·움직임으로만 드러남.
+  //   비율 단위: 실제 1분당
+  // ==================================================================
+  endurance: {
+    // 피로 0~100: 임무 시간(base) · 걷기(move × 짐 · 진흙 · 더위, 달리면 × sprintMul) — 앉거나 엎드려 restStill 초 넘게 쉬면 분당 rest 회복
+    fatigue: { base: 0.3, move: 0.85, sprintMul: 2.4, loadPerKg: 0.03, mud: 1.8, heat: 0.6, rest: 1.6, restStill: 3 },
+    // 갈증 100→0: 가만히 idle · 움직이면 move (달리면 × sprintMul), × (1 + heat × 더위) — 비 rainMul, 밤 nightMul
+    thirst: { idle: 0.35, move: 1.3, sprintMul: 2.2, heat: 1.0, rainMul: 0.6, nightMul: 0.75 },
+    effects: {
+      fatigueStamina: 0.35,           // 피로 100 → 스태미나 상한 −35%
+      fatigueRegen: 0.45,             //           → 스태미나 회복 −45%
+      fatigueSway: 0.25,              //           → 조준 흔들림 +25%
+      thirstBelow: 50, thirstSway: 0.3, thirstRegen: 0.35,   // 갈증 50 아래 (0 쪽으로 갈수록): 흔들림 +, 회복 −
+      pulseBelow: 25, pulseDepth: 0.4,                      // 25 아래: 맥박에 맞춰 시야가 어두워졌다 밝아짐 · 거친 숨
+      collapseBelow: 10, collapseRate: 35,                  // 10 아래: 피로가 분당 35씩 올라 금방 최대
+    },
+    // 수통 count 개 (liters L 씩, 물 무게는 장비에 포함): U 길게 drinkTime 초 → 갈증 +drinkGain (sip L 씀).
+    //  개울·강의 얕은 물에서 앉아 F refillTime 초 → 모두 채움 (물소리 소음 refillNoise m)
+    canteen: { count: 2, liters: 1, sip: 0.25, drinkTime: 3, drinkGain: 15, refillTime: 10, refillNoise: 9, emptyKg: 0.25, moveCancel: 0.4 },
+  },
+
+  // 6단계: 총 다루기 — 총구가 나무·바위에 닿으면 총을 들어 올리거나 당기고 (그동안 사격 불가), 빽빽한 덤불에선 가끔 총이 걸림
+  handling: {
+    muzzle: { length: 0.95, radius: 0.04, blockFire: 0.25, raiseDeg: 34, pullBack: 0.3, speed: 10 },
+    snag: { sigma: 0.85, chance: 0.3, delay: 0.3 },     // 총 높이 잎 소광계수 σ ≥ sigma 인 덤불 속에서 조준 시작 시 chance 확률로 delay 초 늦음
+  },
+  // 6단계: 내려다보면 보이는 몸 (다리·몸통·군화·장비) — 눈 아래 몸을 offsetBack m 뒤로 (앉으면 무릎이 눈 앞에 오게 짧게),
+  //  아래를 볼수록 고개를 숙여 눈이 neckForward m 더 앞으로 (군화 끝이 탄띠 너머로 보임)
+  body: { offsetBack: 0.2, offsetBackCrouch: 0.02, offsetBackProne: 0.05, neckForward: 0.14, hideAbovePitch: 25 },   // hideAbovePitch: 이보다 위를 보면 몸을 그리지 않음 (°)
 
   // 4단계: 동물 정적 — 움직이는 사람 주변·총성 뒤 새·벌레 소리가 잦아든다 (그 자체가 단서)
   wildlife: {
@@ -1003,6 +1135,9 @@ export const CONFIG = {
     aiDebug: 'F2', spawnMenu: 'F4',
     // 5단계: 종이 지도·나침반/시계 (누르고 있기), 탄창 채우기 (누르고 있기), 상호작용 = pickup (F: 문서 회수·무기 줍기)
     map: 'KeyM', compass: 'KeyN', refill: 'KeyV',
+    // 6단계: 탐침 (누르고 있기), 손전등, 수통 마시기 (누르고 있기), 디버그 시험 메뉴 (함정·시각·달·피로·갈증)
+    //  F 상호작용 = 인계철선 해제 (5초) · 개울에서 앉아 수통 채우기 (10초) 추가
+    probe: 'KeyY', flashlight: 'KeyL', drink: 'KeyU', fieldDebug: 'F10',
   },
 
   // 사용자 설정 기본값 (Esc 메뉴, localStorage 저장)
