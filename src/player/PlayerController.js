@@ -6,6 +6,8 @@
 //  5단계: T 짧게 = 탄창 확인 (뗄 때), 길게(ammo.pouchLongPress 초) = 탄약 주머니 확인 (pouchCheck 한 프레임).
 //         V 누르고 있기 = 탄창 채우기 (refillHeld), M·N 누르고 있기 = 지도·나침반 (mapHeld·compassHeld).
 //         handsBusy (지도·나침반·탄창 채우기 중) 이면 사격·조준·재장전 입력을 막는다 — 이동 제한은 Game 이 건다.
+//  6단계: Y 누르고 있기 = 탐침 (probeHeld), U 누르고 있기 = 수통 마시기 (drinkHeld), L = 손전등 (flashToggle 한 프레임).
+//         blockFire (총구가 나무·바위에 닿음) → 방아쇠 입력 없음, aimDelay > 0 (덤불에 총이 걸림) → 그동안 조준 입력 없음.
 import { CONFIG } from '../config.js';
 import { clamp } from '../core/math.js';
 import { EventEmitter } from '../core/EventEmitter.js';
@@ -32,6 +34,11 @@ export class PlayerController extends EventEmitter {
     this.mapHeld = false;
     this.compassHeld = false;
     this.handsBusy = false;     // Game 이 정함 (지도·나침반을 들었거나 탄창을 채우는 중)
+    this.probeHeld = false;
+    this.drinkHeld = false;
+    this.flashToggle = false;
+    this.blockFire = false;     // 6단계: 총구 막힘 (Game 이 정함)
+    this.aimDelay = 0;          // 6단계: 덤불에 걸려 조준이 늦어지는 남은 시간 (s)
     this._tHeld = 0;
     this._tUsed = false;
   }
@@ -50,6 +57,7 @@ export class PlayerController extends EventEmitter {
       const W = this.weaponInput;
       W.aim = W.trigger = W.triggerPressed = W.holdBreath = W.reload = W.mode = W.magCheck = false;
       this.pouchCheck = this.refillHeld = this.mapHeld = this.compassHeld = false;
+      this.probeHeld = this.drinkHeld = this.flashToggle = false;
       this._tHeld = 0; this._tUsed = false;
       m.input.move.x = 0; m.input.move.z = 0; m.input.sprint = false; m.input.jump = false; m.input.lean = 0;
       if (m.restrictions.has('aiming')) m.clearRestriction('aiming');
@@ -87,6 +95,12 @@ export class PlayerController extends EventEmitter {
     this.refillHeld = inp.isDown(K.refill);
     this.mapHeld = inp.isDown(K.map);
     this.compassHeld = inp.isDown(K.compass);
+    this.probeHeld = inp.isDown(K.probe);
+    this.drinkHeld = inp.isDown(K.drink);
+    this.flashToggle = inp.pressed(K.flashlight);
+    // 6단계: 총구가 막히면 쏠 수 없고, 덤불에 걸린 동안은 조준이 늦어짐
+    if (this.blockFire) W.trigger = W.triggerPressed = false;
+    if (this.aimDelay > 0) { this.aimDelay = Math.max(0, this.aimDelay - dt); W.aim = W.holdBreath = false; }
     if (this.handsBusy) {
       // 손이 지도·나침반·탄창에 있음 → 사격·조준·재장전·모드 입력 없음
       W.aim = W.trigger = W.triggerPressed = W.holdBreath = W.reload = W.mode = W.magCheck = false;

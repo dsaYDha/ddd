@@ -694,6 +694,19 @@ export class WeaponView {
       rx *= 1 - k; ry *= 1 - k; rz *= 1 - k;
       prx += sr[0] * k; pry += sr[1] * k; prz += sr[2] * k;
     }
+    // 6단계: 총구가 나무·바위·땅에 닿음 → 총을 들어 올리고 뒤로 당김 (그동안 사격 불가 — Game 이 막음), 덤불에 걸림 → 툭 걸렸다 빠짐
+    const ob = clamp(this.obstruct ?? 0, 0, 1);
+    if (ob > 0) {
+      const H = CONFIG.handling.muzzle;
+      const k = ob * ob * (3 - 2 * ob);
+      const gnd = clamp(this.obstructGround ?? 0, 0, 1);
+      pos.z += H.pullBack * k * (1 - gnd);
+      pos.y -= 0.03 * k;
+      prx += H.raiseDeg * DEG * k;
+      prz += 0.12 * k;
+    }
+    const sn = clamp(this.snag ?? 0, 0, 1);
+    if (sn > 0) { prx -= 0.09 * sn; pry += 0.12 * sn; pos.y -= 0.02 * sn; }
     // 자세 전환 중: 총을 잠깐 내림
     if (motor && motor.stanceProgress !== undefined && motor.stanceProgress < 1) {
       const w = Math.sin(Math.PI * clamp(motor.stanceProgress, 0, 1)) * (1 - 0.7 * ads);

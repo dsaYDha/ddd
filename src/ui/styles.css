@@ -88,11 +88,12 @@ button.primary:focus-visible, select:focus-visible, input:focus-visible { outlin
 #death .cause { font-size: 17px; }
 #death .time { font-size: 15px; color: #8d877a; }
 #death .again { margin-top: 26px; font-size: 13px; color: #6f6a60; letter-spacing: 0.08em; }
-#hittest, #spawnmenu { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: none; padding: 8px 12px; font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace;
+#thirstpulse { position: absolute; inset: 0; display: none; pointer-events: none; background: radial-gradient(ellipse at center, rgba(0,0,0,0) 30%, rgba(0,0,0,0.9) 95%); }
+#hittest, #spawnmenu, #fieldmenu { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: none; padding: 8px 12px; font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace;
   background: rgba(0, 0, 0, 0.62); color: #cfc8b6; border-radius: 4px; z-index: 20; }
-#hittest .title, #spawnmenu .title { color: var(--accent); font-size: 11px; letter-spacing: 0.05em; margin-bottom: 4px; }
-#hittest .sel, #spawnmenu .sel { color: #fff3c8; }
-#spawnmenu .val { color: #9fd0ff; }
+#hittest .title, #spawnmenu .title, #fieldmenu .title { color: var(--accent); font-size: 11px; letter-spacing: 0.05em; margin-bottom: 4px; }
+#hittest .sel, #spawnmenu .sel, #fieldmenu .sel { color: #fff3c8; }
+#spawnmenu .val, #fieldmenu .val { color: #9fd0ff; }
 /* 4단계 F2 AI 디버그 글자표 (병사 머리 위) */
 #aidebug { position: absolute; inset: 0; pointer-events: none; display: none; z-index: 12; overflow: hidden; }
 #aidebug .ai-label { position: absolute; left: 0; top: 0; white-space: nowrap; font: 10px/1.35 ui-monospace, Menlo, Consolas, monospace;
@@ -110,9 +111,12 @@ button.primary:focus-visible, select:focus-visible, input:focus-visible { outlin
 #papermap canvas { width: 100%; height: 100%; display: block; border-radius: 2px; }
 #wristgear { position: absolute; right: 4vw; bottom: 0; width: min(520px, 60vw); aspect-ratio: 520 / 360; display: none; z-index: 8;
   transform-origin: 70% 100%; filter: drop-shadow(0 6px 18px rgba(0,0,0,0.6)); }
-#wristgear canvas, #refillview canvas { width: 100%; height: 100%; display: block; }
+#wristgear canvas, #refillview canvas, #fieldhands canvas { width: 100%; height: 100%; display: block; }
 #refillview { position: absolute; left: 50%; bottom: 0; width: min(460px, 70vw); aspect-ratio: 460 / 330; display: none; z-index: 7;
   transform: translate(-50%, 100%); filter: drop-shadow(0 6px 16px rgba(0,0,0,0.55)); }
+/* 6단계: 손 동작 (수통 마시기·채우기·탐침·철선 해제) */
+#fieldhands { position: absolute; left: 50%; bottom: 0; width: min(520px, 76vw); aspect-ratio: 520 / 360; display: none; z-index: 7;
+  transform: translate(-50%, 100%); }
 #screens .panel.wide { width: min(1180px, calc(100vw - 32px)); }
 #screens h2 { margin: 0 0 14px; font-size: 22px; letter-spacing: 0.2em; font-weight: 600; color: #e2dfcc; }
 #screens h2.ok { color: #b9cf8a; } #screens h2.fail { color: #d9967a; }

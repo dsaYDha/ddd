@@ -17,11 +17,12 @@ export class Breathing {
   update(dt, cycle, body) {
     if (!this.e.ready) return;
     const pain = Math.min(1, Math.max(0, body.pain || 0));
-    const b = Math.max(cycle.intensity, pain * 0.55);
+    const dry = Math.min(1, Math.max(0, body.rough || 0));   // 6단계: 심한 갈증 — 거칠고 마른 숨
+    const b = Math.max(cycle.intensity, pain * 0.55, dry * 0.5);
     const audible = CONFIG.audio.breathAudibleFrom;
     if (b > audible && !this.holding) {
       const level = Math.pow((b - audible) / (1 - audible), 1.3);
-      const rough = body.exhausted || pain > 0.3;
+      const rough = body.exhausted || pain > 0.3 || dry > 0.45;
       if (cycle.justInhaled) this._inhale(level, 0.42 / cycle.rate, rough, body.chest);
       if (cycle.justExhaled) this._exhale(level, 0.58 / cycle.rate, rough, pain, body.chest);
     }

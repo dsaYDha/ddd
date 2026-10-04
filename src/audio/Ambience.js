@@ -1,4 +1,5 @@
 // 정글 환경음 (벌레·새·먼 울음소리·바람) + 날씨 연동 빗소리
+// 6단계: 밤 (tod.night) — 밤벌레(여치류) 고음 합창 + 개구리 합창이 커지고 (작은 소리를 가림), 새·긴팔원숭이는 잠잠
 // 4단계: 동물 정적 (ai/Wildlife) — 벌레 합창은 동·서·남·북 네 방향으로 나눠 (방향마다 독립 잡음) 그쪽 활동도만큼 크게,
 //  HRTF 로 듣는 사람 기준 방향에 둔다 → 한쪽이 갑자기 조용해지면 그쪽에 누가 있다. 새는 활동도가 살아 있는 곳에서만,
 //  나무 위 3D 위치에서 운다. 총성 뒤 일대가 30~90초 조용해지고 천천히 살아난다.
@@ -69,6 +70,9 @@ export class Ambience {
     this.cicada = mkInsect(4300, 7, 42, 0.85, 0.0);
     this.cicada2 = mkInsect(5600, 9, 61, 0.7, 0.0);
     this.cricket = mkInsect(3900, 18, 7, 0.95, 0.0);
+    // 6단계 밤: 여치류 고음 (빠른 떨림) + 개구리 합창 (낮은 '꾸르르' — 물가일수록)
+    this.katydid = mkInsect(6900, 11, 34, 0.8, 0.0);
+    this.frogChorus = mkInsect(720, 5, 9, 0.75, 0.0);
 
     // 숲 바탕음 (먼 웅웅거림 + 바람에 흔들리는 잎)
     const bed = this.e.noise('pink', true);
@@ -118,7 +122,10 @@ export class Ambience {
     const setAll = (levels, v) => { for (const l of levels) set(l.gain, v * 0.5); };   // 4방향 전력 합 = 예전 하나
     setAll(this.cicada, (0.03 * tod.day + 0.02 * tod.dusk + 0.004 * tod.dawn) * mask);
     setAll(this.cicada2, (0.012 * tod.day + 0.018 * tod.dusk) * mask);
-    setAll(this.cricket, (0.025 * tod.dusk + 0.012 * tod.dawn) * mask);
+    const night = tod.nightAmb ?? tod.night ?? 0;
+    setAll(this.cricket, (0.025 * tod.dusk + 0.012 * tod.dawn + 0.03 * night) * mask);
+    setAll(this.katydid, 0.026 * night * mask);
+    setAll(this.frogChorus, 0.03 * night * (0.35 + 0.65 * nearWater) * (1 + 0.5 * rain));
     this._updateQuads();
     set(this.bedGain.gain, 0.04 + 0.03 * wind);
     set(this.leafGain.gain, 0.012 + 0.03 * wind);
@@ -130,7 +137,7 @@ export class Ambience {
     const T = this.timers;
     T.bird -= dt; T.call -= dt; T.frog -= dt; T.drip -= dt; T.gibbon -= dt;
     if (T.bird <= 0) {
-      const rate = 0.6 * tod.dawn + 0.25 * tod.day + 0.35 * tod.dusk;
+      const rate = (0.6 * tod.dawn + 0.25 * tod.day + 0.35 * tod.dusk) * (1 - 0.9 * night);
       T.bird = (1 / Math.max(0.05, rate)) * (0.5 + Math.random() * 1.5);
       if (Math.random() < mask) this._bird();
     }
@@ -140,11 +147,11 @@ export class Ambience {
     }
     if (T.gibbon <= 0) {
       T.gibbon = (tod.dawn > 0.5 ? 25 : 70) + Math.random() * 40;
-      if (Math.random() < mask * (0.4 + tod.dawn)) this._gibbon();
+      if (Math.random() < mask * (0.4 + tod.dawn) * (1 - night)) this._gibbon();
     }
     if (T.frog <= 0) {
       T.frog = 0.4 + Math.random() * 2.5;
-      const p = (0.25 + 0.75 * nearWater) * (0.3 * tod.dawn + 0.15 * tod.day + 1.0 * tod.dusk) * (1 + rain);
+      const p = (0.25 + 0.75 * nearWater) * (0.3 * tod.dawn + 0.15 * tod.day + 1.0 * tod.dusk + 1.6 * night) * (1 + rain);
       if (Math.random() < p) this._frog();
     }
     if (T.drip <= 0) {

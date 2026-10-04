@@ -81,10 +81,11 @@ export class DebugOverlay {
       ...(i.injury ? this._injuryLines(i.injury) : []),
       ...(i.ai ? this._aiLines(i.ai) : []),
       ...(i.mission ? this._missionLines(i.mission) : []),
+      ...(i.field ? this._fieldLines(i.field) : []),
       '',
       '[1~9] 테스트 지점 이동:',
       ...i.testPoints.map((t) => `  ${t.key} ${t.name}`),
-      '[F2] AI 디버그   [F4] 적 생성   [F6] 대퇴 부상 (테스트)   [F7] 제압 테스트   [F8] 표적 배치   [F9] 피격 테스트·무적   [H] 붕대 [G] 지혈대 [F] 줍기·문서   [M] 지도 [N] 나침반 [V] 탄창 채우기   [Esc] 설정',
+      '[F2] AI 디버그   [F4] 적 생성   [F6] 대퇴 부상 (테스트)   [F7] 제압 테스트   [F8] 표적 배치   [F9] 피격 테스트·무적   [H] 붕대 [G] 지혈대 [F] 줍기·문서   [M] 지도 [N] 나침반 [V] 탄창 채우기   [Y] 탐침 [U] 수통 [L] 손전등 [F10] 6단계 시험   [Esc] 설정',
     ];
     return lines.join('\n');
   }
@@ -99,6 +100,18 @@ export class DebugOverlay {
       `날씨  ${w.label} (${w.kind}→${w.next} ${(w.k * 100).toFixed(0)}%)  비 ${w.rain.toFixed(2)}  천둥 가림 ${R.weather.thunderMask.toFixed(2)}`
         + `   디렉터: 대기 ${d.pending.length} · 생성 ${d.spawned.length} · 증원 ${d.reinforcements}${d.reinforceAt !== null ? `(${Math.round(d.reinforceAt - d.t)}s)` : ''} · 매복 ${d.ambush.state} · 첫 접촉 ${d.firstContact >= 0 ? mm(d.firstContact) : '-'}`,
       `발자국 ${R.g.footprints.list.length} (화면 ${R.printMesh.shown})   사상자 확인 ${R._stats.confirmed} · 추정 ${R._stats.estimated}   이동 ${Math.round(R._stats.distance)} m`,
+    ];
+  }
+
+  /** 6단계: 함정·밤·몸 */
+  _fieldLines(f) {
+    const f2 = (v) => (Number.isFinite(v) ? v.toFixed(2) : '-');
+    const T = f.traps, near = f.nearTrap;
+    const fx = f.endurance.effects();
+    return [
+      `함정  ${T.list.length}개 (남음 ${T.armed.length} · 알아챔 ${T.stats.known} · 발동 ${T.stats.triggered})  가장 가까운 ${near ? `${near.trap.kind} ${near.distance.toFixed(1)}m${near.trap.known ? ' (알아챔)' : ''}` : '-'}  탐침 ${f.probe ? Math.round(f.probe * 100) + '%' : '-'}  해제 ${f.disarm ? Math.round(f.disarm * 100) + '%' : '-'}`,
+      `밤  낮 빛 ${f2(f.light.day)} · 달 ${f.light.moon} · 빛 수준 ${f2(f.light.ambient)} (+인공 ${f2(f.light.extra)})  암순응 ${f2(f.adapt.level)} (노출 ×${f2(f.adapt.exposureMul)})  조명탄 ${f.flares}  손전등 ${f.lamp ? '켬' : '끔'}  적 night ${f2(f.night)}`,
+      `몸  피로 ${f.endurance.fatigue.toFixed(1)} · 갈증 ${f.endurance.thirst.toFixed(1)} (분당 +${f2(f.endurance.rates.fatigue)} / −${f2(f.endurance.rates.thirst)})  물 ${f.endurance.water.toFixed(2)} L  스태미나 상한 ×${f2(fx.staminaMaxMul)} 회복 ×${f2(fx.regenMul)} 흔들림 ×${f2(fx.swayMul)}  총구 막힘 ${f2(f.obstruct)}`,
     ];
   }
 

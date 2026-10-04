@@ -8,6 +8,7 @@
 //     적 시야 안개, 결과 집계(이동 거리·사상자 확인/추정).
 //   · 끝: 회수 지점 60초 → 헬기 소리가 다가오고 화면이 검게 → 결과 / 사망·시간 초과·포기·행렬 놓침 → 결과.
 //   · 체크포인트 (설정, 1회): 첫 중간 목표 때 저장 → 결과 화면에서 그 순간부터 다시.
+//   · 6단계: 함정 (임무 계획 m.traps → Game.traps, 적 길찾기에 자기 편 지뢰·구덩이 자리), 달 모양, 밤 임무면 손전등 빛을 장면에.
 //  이벤트: 'result' {summary} (Game 이 결과 화면을 띄움)
 // =====================================================================
 import { CONFIG } from '../config.js';
@@ -79,6 +80,13 @@ export class MissionRuntime extends EventEmitter {
     const R = opts.restore;
     g.resetForMission(R ? R.player.x : def.start.x, R ? R.player.z : def.start.z, R ? R.player.yaw : def.start.yaw);
     if (R) g.restorePlayer(R.player);
+    // 6단계: 함정 · 달 · 밤 손전등 빛
+    g.traps.load(def.traps ?? []);
+    if (R?.traps) g.traps.restore(R.traps);
+    g.nav.setHazards(g.traps.hazards('enemy'));
+    g.atmosphere.setMoon(def.moon ?? 'half');
+    g.enemies.moon = def.moon ?? 'half';
+    g.nightFX.setLightActive(def.tod === 'night' || def.tod === 'dusk');
     // 시계·날씨
     this.clock = new GameClock(def.startHour);
     this.weather = new WeatherCycle(def.weatherPlan, new RNG((def.seed * 17 + 5) >>> 0));
@@ -109,6 +117,9 @@ export class MissionRuntime extends EventEmitter {
     this._offs.length = 0;
     this.director?.dispose();
     this.g.missionAudio?.heliStop(1);
+    this.g.traps?.clear();
+    this.g.nav?.setHazards([]);
+    this.g.fieldAudio?.stopAll();
     this.active = false;
   }
 
@@ -276,6 +287,8 @@ export class MissionRuntime extends EventEmitter {
     s.estimated = this._stats.estimated;
     s.enemyWounded = g.enemies.soldiers.filter((x) => x.hitByPlayer && x.alive).length;
     s.weapon = g.shooter.weapon.data.label ?? '';
+    const T = g.traps;
+    s.traps = { known: T.stats.known, triggered: T.stats.triggered - T.stats.byEnemy, disarmed: T.list.filter((t) => t.state === 'disarmed').length };
     return this.mission.summary();
   }
 
@@ -318,6 +331,7 @@ export class MissionRuntime extends EventEmitter {
         firstContact: d.firstContact, nextDistant: d.nextDistant, shots0: d._shots0,
       },
       squads, docsTaken: !this.props.docs?.visible,
+      traps: g.traps.snapshot(),
     };
   }
 

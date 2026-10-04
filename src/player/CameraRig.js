@@ -48,6 +48,8 @@ export class CameraRig {
     this.death = 0;              // 0~1 죽어서 쓰러짐
     this.deathSide = 1;
     this.groundY = null;         // 죽음 시점이 내려갈 땅 높이 (Game 이 채움)
+    this.pitDepth = 0;           // 6단계: 꼬챙이 구덩이에 빠져 눈이 내려간 깊이 (m, Game 이 채움 — 부드럽게 따라감)
+    this._pit = 0;
     motor.on('land', (e) => { this.dipVel -= Math.min(1.6, e.speed * 0.35) * CONFIG.camera.landingDip * 10; });
     motor.on('suction', (e) => { this.dipVel -= 0.25 * e.intensity; });
   }
@@ -111,6 +113,9 @@ export class CameraRig {
       this.dipVel += (-60 * this.dip - 12 * this.dipVel) * h;
       this.dip += this.dipVel * h;
     }
+
+    // 6단계: 구덩이에 빠짐 → 쑥 내려갔다가 기어 나오며 천천히 올라옴
+    this._pit += (this.pitDepth - this._pit) * Math.min(1, dt * (this.pitDepth > this._pit ? 9 : 1.6));
 
     // 가늠자 조준 중엔 머리 흔들림을 줄임 (뺨을 개머리판에 붙이고 버팀)
     const steady = 1 - 0.8 * clamp(this.ads, 0, 1);
@@ -186,7 +191,7 @@ export class CameraRig {
     const cam = this.camera;
     cam.position.set(
       m.position.x + right.x * (this.leanSmooth + bobL),
-      this.eyeY + bobV + breathV + this.dip - Math.abs(m.leanOffset) * 0.06 - deathDrop,
+      this.eyeY + bobV + breathV + this.dip - Math.abs(m.leanOffset) * 0.06 - deathDrop - this._pit,
       m.position.z + right.z * (this.leanSmooth + bobL),
     );
     cam.rotation.set(

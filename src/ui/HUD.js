@@ -7,6 +7,7 @@
 //        F8 피격 로그는 F3 디버그를 켰을 때만 보인다 (Game 이 결정).
 // 4단계: F4 적 생성 메뉴 (↑↓ 고르기, ←→ 값 바꾸기, Enter 실행, F4 닫기).
 // 5단계: 무전 자막 (화면 아래 — 잡음과 함께 짧게), 내 위치·목표·거리 표시는 없다.
+// 6단계: 갈증이 심하면 맥박에 맞춰 시야가 어두워졌다 밝아짐 (thirstPulse), F10 6단계 시험 메뉴 (함정·시각·달·피로·갈증 — 디버그 모드).
 const ICONS = {
   stand: '<svg viewBox="0 0 24 40"><circle cx="12" cy="5" r="3.2"/><path d="M8 11h8l1.5 13h-3l-.8 14h-3.4l-.8-14h-3z"/></svg>',
   crouch: '<svg viewBox="0 0 24 40"><circle cx="11" cy="15" r="3.2"/><path d="M7 20h8l3 7-3 2-1 9h-3.5l.5-8-5-2z"/></svg>',
@@ -31,6 +32,8 @@ export class HUD {
       <div id="blackout"></div>
       <div id="hittest"><div class="title">피격 테스트 (F9) — ↑↓ 고르기 · Enter 맞기 · F9 닫기</div><div class="items"></div></div>
       <div id="spawnmenu"><div class="title">적 생성 (F4) — ↑↓ 고르기 · ←→ 바꾸기 · Enter 실행 · F4 닫기</div><div class="items"></div></div>
+      <div id="fieldmenu"><div class="title">6단계 시험 (F10) — ↑↓ 고르기 · ←→ 바꾸기 · Enter 실행 · F10 닫기</div><div class="items"></div></div>
+      <div id="thirstpulse"></div>
       <div id="death"><div class="box"><div class="dead">사망</div><div class="cause"></div><div class="time"></div>
         <div class="again">Enter — 결과 보기 (임무 실패)</div></div></div>
     `);
@@ -41,6 +44,11 @@ export class HUD {
     this.spawnEl = root.querySelector('#spawnmenu');
     this.spawnItems = root.querySelector('#spawnmenu .items');
     this.deathEl = root.querySelector('#death');
+    this.fieldEl = root.querySelector('#fieldmenu');
+    this.fieldItems = root.querySelector('#fieldmenu .items');
+    this.thirstEl = root.querySelector('#thirstpulse');
+    this.thirstPulse = 0;     // 6단계: 갈증 맥박 시야 깊이 (Endurance.effects().pulse)
+    this._thirstShown = -1;
     this._flash = 0;
     this._flashShown = -1;
     this._blackShown = -1;
@@ -128,6 +136,16 @@ export class HUD {
     }).join('');
   }
 
+  /** 6단계 F10 시험 메뉴 (setSpawnMenu 와 같은 꼴) */
+  setFieldMenu(items, index = 0) {
+    if (!items) { this.fieldEl.style.display = 'none'; return; }
+    this.fieldEl.style.display = 'block';
+    this.fieldItems.innerHTML = items.map((it, i) => {
+      const v = it.value !== undefined ? ` <span class="val">◀ ${esc(it.value)} ▶</span>` : '';
+      return `<div class="${i === index ? 'sel' : ''}">${i === index ? '▶ ' : '&nbsp;&nbsp;'}${esc(it.label)}${v}</div>`;
+    }).join('');
+  }
+
   setF7(active) {
     this.f7El.style.display = active ? 'block' : 'none';
   }
@@ -164,6 +182,15 @@ export class HUD {
         s.setProperty('--tin', `${(46 - tv * 26).toFixed(1)}%`);   // 맑은 가운데가 좁아짐
         s.setProperty('--tdark', (0.35 + 0.6 * tv).toFixed(3));
       }
+    }
+
+    // 6단계 갈증: 맥박에 맞춰 시야 가장자리부터 어두워졌다 밝아짐
+    const tp = Math.max(0, this.thirstPulse || 0);
+    const tvv = tp > 0.001 ? tp * (0.25 + 0.75 * Math.pow(Math.max(0, Math.sin(this.pulse * Math.PI)), 2)) : 0;
+    if (Math.abs(tvv - this._thirstShown) > 0.004) {
+      this._thirstShown = tvv;
+      this.thirstEl.style.display = tvv > 0 ? 'block' : 'none';
+      this.thirstEl.style.opacity = Math.min(1, tvv * 2).toFixed(3);
     }
 
     // 깊이 빠졌을 때 시야 아래쪽이 살짝 어두워짐

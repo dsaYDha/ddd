@@ -327,6 +327,147 @@ export function buildSoldierGeometry(localPose, variant = 0, weapon = 'rifle') {
 }
 
 // ---------------------------------------------------------------
+// 6단계: 플레이어 몸 (내려다보면 보이는 다리·몸통·군화·장비) — 머리·목·팔은 빼고 (1인칭 화면 모델이 팔·총)
+//  swing: 걸음 위상 각 (rad, 다리를 앞뒤로 흔듦), wounds: 붕대·지혈대를 감은 상처 [{part, bandaged, tourniquet, type}]
+// ---------------------------------------------------------------
+const PLAYER = {   // 내려다보면 가까이·위에서 보므로 적 병사 색과 비슷한 밝기 (너무 어두우면 숲 바닥에서 검은 덩어리로 보임)
+  cloth: C('#5e6640'), trousers: C('#59603d'), boot: C('#2e2924'), bootCanvas: C('#535a3a'), belt: C('#6e6d4a'),
+  pouch: C('#5f6540'), canteen: C('#525a38'), cap: C('#3a3a33'), bandage: C('#d6cfbb'), stain: C('#7a3a2c'), strap: C('#3c3e2a'),
+};
+const HIDE_PARTS = new Set(['head', 'neck', 'upperArmL', 'upperArmR', 'forearmL', 'forearmR']);
+const LEG = { thighL: 'L', shinL: 'L', thighR: 'R', shinR: 'R' };
+
+/** 다리 흔들기: 엉덩이(대퇴 a)를 축으로 몸 오른쪽 축 둘레 회전, 뒤로 간 다리는 무릎을 굽힘 */
+function swingLegs(caps, F, swing) {
+  if (!swing) return;
+  const axis = F.right;
+  const rot = (p, pivot, ang) => {
+    const v = V3(p.x - pivot.x, p.y - pivot.y, p.z - pivot.z).applyAxisAngle(axis, ang);
+    p.x = pivot.x + v.x; p.y = pivot.y + v.y; p.z = pivot.z + v.z;
+  };
+  for (const side of ['L', 'R']) {
+    const th = caps.find((c) => c.part === `thigh${side}`), sh = caps.find((c) => c.part === `shin${side}`);
+    if (!th || !sh) continue;
+    const a = (side === 'L' ? 1 : -1) * swing;
+    const hip = { x: th.a.x, y: th.a.y, z: th.a.z };
+    rot(th.b, hip, a); rot(sh.a, hip, a); rot(sh.b, hip, a);
+    // + 회전 = 다리가 앞으로 (아래 −Y → −Z). 뒤로 간 다리는 무릎을 굽혀 발이 뒤로 들림
+    const bend = Math.max(0, -a) * 1.1;
+    if (bend > 0) rot(sh.b, { x: sh.a.x, y: sh.a.y, z: sh.a.z }, -bend);
+  }
+}
+
+/** 상처에 감은 붕대·지혈대 (그 부위 캡슐 둘레 띠) */
+function addDressings(buf, caps, wounds) {
+  for (const w of wounds ?? []) {
+    if (!w.bandaged && !w.tourniquet) continue;
+    const cs = caps.filter((c) => c.part === w.part);
+    if (!cs.length) continue;
+    if (cs.length >= 2) {
+      // 몸통 쌍 캡슐: 둘을 감싸는 띠
+      const a = mid(cs[0].a, cs[1].a), b = mid(cs[0].b, cs[1].b);
+      const half = Math.hypot(cs[0].a.x - cs[1].a.x, cs[0].a.y - cs[1].a.y, cs[0].a.z - cs[1].a.z) / 2;
+      const c = a.clone().lerp(b, 0.5), dir = V3().subVectors(b, a).normalize();
+      addCylinder(buf, c.clone().addScaledVector(dir, -0.05), c.clone().addScaledVector(dir, 0.05), cs[0].r + half + 0.01, cs[0].r + half + 0.01, PLAYER.bandage, 0, 14, false);
+      continue;
+    }
+    const cap = cs[0], a = vec(cap.a), b = vec(cap.b), dir = V3().subVectors(b, a).normalize();
+    if (w.tourniquet) {
+      // 지혈대: 상처 위쪽 (몸 쪽 끝) 검은 끈 + 조이는 막대
+      const c = a.clone().lerp(b, 0.12);
+      addCylinder(buf, c.clone().addScaledVector(dir, -0.018), c.clone().addScaledVector(dir, 0.018), cap.r * 1.1, cap.r * 1.1, PLAYER.strap, 0, 12, false);
+      const side = V3().crossVectors(dir, V3(0, 1, 0));
+      if (side.lengthSq() < 1e-4) side.set(1, 0, 0);
+      side.normalize();
+      addCylinder(buf, c.clone().addScaledVector(side, cap.r * 1.1 - 0.06), c.clone().addScaledVector(side, cap.r * 1.1 + 0.06), 0.006, 0.006, PLAYER.belt, 0, 5);
+    }
+    if (w.bandaged) {
+      const c = a.clone().lerp(b, 0.5);
+      const half = w.type === 'graze' ? 0.035 : 0.06;
+      addCylinder(buf, c.clone().addScaledVector(dir, -half), c.clone().addScaledVector(dir, half), cap.r * 1.12, cap.r * 1.12, PLAYER.bandage, 0, 12, false);
+      // 배어 나온 피 (작은 얼룩 띠)
+      addCylinder(buf, c.clone().addScaledVector(dir, -0.012), c.clone().addScaledVector(dir, 0.012), cap.r * 1.13, cap.r * 1.13, PLAYER.stain, 0, 12, false);
+    }
+  }
+}
+
+/** 플레이어 장비: 탄띠·탄입대 4·구급낭·수통 2 (양 엉덩이 뒤)·멜빵 */
+function addPlayerGear(buf, caps, F) {
+  const { up, right, front, pelvisTop } = F;
+  const pr = caps.find((c) => c.part === 'pelvis').r;
+  const beltC = pelvisTop.clone().addScaledVector(up, 0.035);
+  // 탄띠 (골반 둘레 고리)
+  addCylinder(buf, beltC.clone().addScaledVector(up, -0.025), beltC.clone().addScaledVector(up, 0.025), pr + 0.105, pr + 0.105, PLAYER.belt, 0, 16, false);
+  for (const off of [-0.17, -0.09, 0.09, 0.17]) {
+    const c = beltC.clone().addScaledVector(front, pr + 0.075).addScaledVector(right, off).addScaledVector(up, -0.03);
+    addBox(buf, c, right, up, front, 0.036, 0.055, 0.026, PLAYER.pouch, 0);
+    addBox(buf, c.clone().addScaledVector(up, 0.052).addScaledVector(front, 0.004), right, up, front, 0.038, 0.012, 0.028, PLAYER.pouch, 0);   // 덮개
+  }
+  // 구급낭 (왼쪽 앞 옆)
+  addBox(buf, beltC.clone().addScaledVector(right, -(pr + 0.09)).addScaledVector(front, 0.03).addScaledVector(up, -0.03), right, up, front, 0.026, 0.045, 0.04, PLAYER.pouch, 0);
+  // 수통 2 (양쪽 엉덩이 뒤) — 뚜껑 포함
+  for (const sgn of [-1, 1]) {
+    const can = beltC.clone().addScaledVector(right, sgn * (pr + 0.06)).addScaledVector(front, -0.09).addScaledVector(up, -0.07);
+    addCylinder(buf, can.clone().addScaledVector(up, -0.08), can.clone().addScaledVector(up, 0.07), 0.05, 0.05, PLAYER.canteen, 0, 10);
+    addCylinder(buf, can.clone().addScaledVector(up, 0.07), can.clone().addScaledVector(up, 0.095), 0.018, 0.018, PLAYER.cap, 0, 8);
+  }
+  // 멜빵: 앞 탄띠 → 어깨 (양쪽)
+  const chest = caps.filter((c) => c.part === 'upperChest');
+  const chR = chest[0].r;
+  for (const sgn of [-1, 1]) {
+    const p0 = beltC.clone().addScaledVector(right, sgn * 0.13).addScaledVector(front, pr + 0.06);
+    const p1 = F.chest.clone().addScaledVector(right, sgn * 0.12).addScaledVector(front, chR + 0.05).addScaledVector(up, 0.12);
+    addCylinder(buf, p0, p1, 0.016, 0.016, PLAYER.belt, 0, 6, false);
+  }
+}
+
+/** 플레이어 몸 지오메트리 (국소 자세: 발 원점, yaw 0 — 앞 −Z) */
+export function buildPlayerGeometry(localPose, swing = 0, wounds = null) {
+  const caps = buildHitboxes(localPose, []);
+  const F = bodyFrame(caps);
+  swingLegs(caps, F, swing);
+  const buf = newBuf();
+  for (const cap of caps) {
+    if (HIDE_PARTS.has(cap.part)) continue;
+    let fn;
+    switch (cap.part) {
+      case 'upperChest': case 'abdomen': fn = () => [PLAYER.cloth, 0]; break;
+      case 'pelvis': fn = (s, L, r) => (s > L + r - 0.05 ? [PLAYER.belt, 0] : [PLAYER.trousers, 0]); break;
+      case 'shinL': case 'shinR': fn = (s, L) => (s > L - 0.06 ? [PLAYER.boot, 0] : s > L - 0.17 ? [PLAYER.bootCanvas, 0] : [PLAYER.trousers, 0]); break;
+      default: fn = () => [PLAYER.trousers, 0];
+    }
+    addCapsule(buf, cap.a, cap.b, cap.r * (cap.part.startsWith('shin') ? 1.06 : 1.02), fn);
+  }
+  // 군화 앞코 (발목 끝에서 앞으로)
+  for (const side of ['L', 'R']) {
+    const sh = caps.find((c) => c.part === `shin${side}`);
+    if (!sh) continue;
+    const ank = vec(sh.b), legDir = V3().subVectors(vec(sh.b), vec(sh.a)).normalize();
+    const fwd = F.front.clone().addScaledVector(legDir, -F.front.dot(legDir)).normalize();
+    const toe = ank.clone().addScaledVector(fwd, 0.1).addScaledVector(legDir, sh.r * 0.6);
+    addCapsule(buf, ank.clone().addScaledVector(legDir, sh.r * 0.5), toe, sh.r * 0.85, () => [PLAYER.boot, 0]);
+  }
+  addPlayerGear(buf, caps, F);
+  addDressings(buf, caps, wounds);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(buf.pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(buf.nor, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(buf.col, 3));
+  g.setAttribute('camo', new THREE.Float32BufferAttribute(buf.camo, 1));
+  g.setIndex(buf.pos.length / 3 > 65535 ? new THREE.Uint32BufferAttribute(buf.idx, 1) : new THREE.Uint16BufferAttribute(buf.idx, 1));
+  g.computeBoundingSphere();
+  return g;
+}
+
+/** 플레이어 몸 재질 (병사와 같은 셰이더 — 무늬 없음) */
+export function playerBodyMaterial() {
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true });
+  patchCamo(m);
+  patchCanopy(m, { sun: 1, sky: 0.7 });
+  return m;
+}
+
+// ---------------------------------------------------------------
 // 자세 → 캐시 키 (HumanEntity.pose 가 이미 1/12·0.02 단위로 끊어 줌)
 // ---------------------------------------------------------------
 const f3 = (v) => (Number.isFinite(v) ? v.toFixed(3) : '');

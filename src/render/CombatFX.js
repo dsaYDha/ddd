@@ -112,6 +112,13 @@ const P_SPEC = {
   bloodMist: { mode: BILL, cell: 'puff', n: 2, speed: [0.3, 0.9], cone: 25, size: [0.03, 0.05], to: [0.14, 0.22], life: [0.22, 0.4], alpha: 0.5, color: PAL.bloodMist, drag: 5, grow: 2.5, fadeOut: 1.3 },
   bloodDrops: { mode: STREAK, cell: 'drop', n: 6, speed: [0.8, 2.6], cone: 32, size: [0.008, 0.016], life: [0.5, 0.9], alpha: 0.95, color: PAL.blood, drag: 0.6, grav: 1, stretch: 0.03, kill: true, fadeOut: 0.4, jitter: 0.02 },
   remoteFlash: { mode: BILL, cell: 'flash', n: 1, speed: [0, 0], cone: 0, size: [0.28, 0.42], life: [0.035, 0.05], alpha: 1, color: PAL.flash, emissive: 10, fadeOut: 0.5, offset: [0.05, 0.1] },
+  // 6단계 함정 폭발 (고어 없음): 섬광 → 불덩이 → 흙 줄기·흙 기둥 → 땅을 따라 퍼지는 먼지 고리 → 오래 남는 연기
+  boomFlash: { mode: BILL, cell: 'flash', n: 2, speed: [0, 0], cone: 0, size: [1.6, 2.4], life: [0.06, 0.11], alpha: 1, color: PAL.flash, emissive: 16, fadeOut: 0.6, offset: [0.15, 0.4] },
+  boomFire: { mode: BILL, cell: 'puff', n: 5, speed: [2, 6], cone: 60, size: [0.4, 0.7], to: [1.2, 1.9], life: [0.1, 0.18], alpha: 0.9, color: PAL.spark, emissive: 5, drag: 7, grow: 3, fadeOut: 1.0, offset: [0.05, 0.2] },
+  boomSpray: { mode: STREAK, cell: 'spray', n: 46, speed: [6, 17], cone: 58, size: [0.22, 0.48], life: [0.6, 1.3], alpha: 1, color: PAL.dirtSpray, drag: 0.55, grav: 1, stretch: 0.06, kill: true, fadeOut: 1.0 },
+  boomColumn: { mode: BILL, cell: 'puff', n: 9, speed: [3, 9], cone: 22, size: [0.6, 1.0], to: [2.2, 3.4], life: [1.4, 2.4], alpha: 0.9, color: PAL.dirtBurst, drag: 2.4, lift: 0.3, grow: 2.2, fadeIn: 0.04, fadeOut: 1.3 },
+  boomRing: { mode: BILL, cell: 'puff', n: 12, speed: [4, 10], cone: 84, size: [0.4, 0.65], to: [1.7, 2.6], life: [1.3, 2.4], alpha: 0.72, color: PAL.dirtDust, drag: 3.4, wind: 1, lift: 0.15, grow: 2.4, fadeOut: 1.4 },
+  boomSmoke: { mode: BILL, cell: 'puff', n: 11, speed: [0.8, 2.6], cone: 70, size: [0.8, 1.2], to: [3.0, 4.6], life: [5, 9], alpha: 0.5, color: PAL.smoke, drag: 1.4, wind: 1, lift: 0.4, grow: 1.8, fadeIn: 0.15, fadeOut: 1.6, delay: [0.05, 0.3] },
 };
 //  파편: size(대표 크기) × shape [x, y, z] 배율 (z 가 길면 가시·섬유), bounce(튕김 0 = 붙음), spin(rad/s)
 const D_SPEC = {
@@ -125,6 +132,7 @@ const D_SPEC = {
   vineFiber: { n: 10, speed: [1.5, 5], cone: 50, size: [0.04, 0.09], shape: [0.06, 0.05, 1], life: [3, 5], bounce: 0.2, spin: 18, drag: 1.4, colors: PAL.fiber },
   clothFiber: { n: 4, speed: [1, 3], cone: 50, size: [0.004, 0.01], shape: [1, 0.4, 1.4], life: [1.5, 2.5], bounce: 0.1, spin: 16, drag: 2, colors: PAL.clothFiber },
   leafShred: { n: 3, speed: [1, 3], cone: 40, size: [0.004, 0.008], shape: [1, 0.25, 1.2], life: [2, 3.5], bounce: 0, spin: 14, drag: 3, colors: PAL.shred },
+  boomClod: { n: 60, speed: [4, 14], cone: 62, size: [0.012, 0.04], shape: [1, 0.8, 1], life: [3, 5], bounce: 0.12, spin: 22, drag: 0.35, colors: PAL.dirtClod },
 };
 //  잎: size(한 변), fall(떨어지는 속도), sway(좌우 흔들림 진폭), freq(Hz)
 const L_SPEC = {
@@ -140,7 +148,10 @@ const DECAL_SPEC = {
   dirt: { cells: 'scuff', size: [0.13, 0.18], aspect: 1.3, life: 45 },
   bamboo: { cells: 'bhole', size: [0.05, 0.065], aspect: 1, life: 90 },
   blood: { cells: 'splat', size: [0.16, 0.3], aspect: 1, life: 240 },
+  scorch: { cells: 'splat', size: [1.6, 2.2], aspect: 1, life: 400 },
 };
+// 폭발 자국 색 (진흙 자국 칸 × 이 배율 → 그을린 검은 흙)
+const SCORCH_TINT = [0.45, 0.4, 0.36];
 // 핏자국 색 (진흙 자국 칸 × 이 배율 → 어두운 검붉은 얼룩)
 const BLOOD_TINT = [1.55, 0.42, 0.36];
 
@@ -898,6 +909,47 @@ export class CombatFX {
     }
   }
 
+  /**
+   * 6단계 함정 폭발: { point, ground? } → 섬광·불덩이·흙 줄기·흙 기둥·먼지 고리·연기·흙덩이·잎 + 그을린 자국. 빛은 boomFlash (0~1)
+   * 파편 자체는 보이지 않는다 (실제 투사체 — 착탄 효과는 Game 이 일부만 그림)
+   */
+  explosion(e) {
+    if (!e || !e.point) return;
+    const P = this._P.set(e.point.x, e.point.y, e.point.z);
+    this._N.set(0, 1, 0);
+    this._D.set(0, -1, 0);
+    this._R.set(0, 1, 0);
+    this._dist = this._hasCam ? this._cam.distanceTo(P) : 10;
+    this._k = this.q.spawn * (this._dist < 60 ? 1 : 0.6);
+    this._near = this._dist < SMALL_DIST * 1.5;
+    if (this.groundHeight) {
+      const gy = this.groundHeight(P.x, P.z);
+      this._fmode = 1; this._floor = Number.isFinite(gy) ? gy - 0.02 : -Infinity;
+    } else { this._fmode = 2; this._floor = P.y - 0.05; }
+    const up = this._A.set(0, 1, 0);
+    this._emit(P_SPEC.boomFlash, 2, up);
+    this._emit(P_SPEC.boomFire, this._cnt(P_SPEC.boomFire.n, 2), up);
+    this._emit(P_SPEC.boomSpray, this._cnt(P_SPEC.boomSpray.n, 12), up);
+    this._emit(P_SPEC.boomColumn, this._cnt(P_SPEC.boomColumn.n, 3), up);
+    this._emit(P_SPEC.boomRing, this._cnt(P_SPEC.boomRing.n, 4), up);
+    this._emit(P_SPEC.boomSmoke, this._cnt(P_SPEC.boomSmoke.n, 3), up);
+    if (this._near) {
+      this._emitDebris(D_SPEC.boomClod, this._cnt(D_SPEC.boomClod.n, 10), P, up, 0.05);
+      this._emitLeaves(L_SPEC.litter, this._cnt(L_SPEC.litter.n * 3, 4), P, up, 0.1);
+    }
+    // 그을린 자국 (땅)
+    if (this.groundHeight) { const g = this.groundHeight(P.x, P.z); if (Number.isFinite(g)) this._P.y = g + 0.02; }
+    this._decal(DECAL_SPEC.scorch, 'none', SCORCH_TINT);
+    this._boomAge = 0;
+    this._boomFresh = true;
+  }
+
+  /** 폭발 섬광 빛 0~1 (터지는 순간 1 → 0.35초) — 통합 쪽이 월드 빛을 잠깐 밝힌다 */
+  get boomFlash() {
+    const a = this._boomAge ?? Infinity;
+    return a < 0.35 ? (1 - a / 0.35) ** 1.5 : 0;
+  }
+
   /** 총구 화염 빛 0~1 (발사 순간 1 → FLASH_TIME 동안 0) — 통합 쪽이 월드 빛을 잠깐 밝힌다 */
   get flash() {
     const a = this._flashAge;
@@ -926,6 +978,7 @@ export class CombatFX {
   update(dt, camera, env = {}) {
     dt = Math.min(Math.max(dt || 0, 0), 0.1);
     if (this._flashFresh) this._flashFresh = false; else this._flashAge += dt;
+    if (this._boomFresh) this._boomFresh = false; else if (this._boomAge !== undefined) this._boomAge += dt;
     if (camera) {
       camera.updateMatrixWorld();
       const m = camera.matrixWorld.elements;
