@@ -15,6 +15,7 @@ import { RNG } from '../core/rng.js';
 import { LAYOUT, riverCenterZ } from '../world/MapLayout.js';
 import { WeatherCycle } from './Weather.js';
 import { planTraps } from './TrapPlan.js';
+import { makeRoster } from '../ai/FriendSquad.js';
 
 export const MISSION_TYPES = ['recon', 'ambush', 'raid'];
 export const MISSION_LABELS = { recon: '정찰', ambush: '매복', raid: '적 야영지 습격' };
@@ -279,21 +280,33 @@ export function pathLength(world, a, b) {
  * @param {number} seed
  * @param {{data, query, nav}} world
  */
-export function generateMission(type, seed, world) {
+export function generateMission(type, seed, world, opts = {}) {
+  const mode = opts.mode === 'squad' ? 'squad' : 'solo';
   for (let attempt = 0; attempt < 12; attempt++) {
     const rng = new RNG((seed * 7919 + attempt * 104729) >>> 0);
-    const m = tryMission(type, seed, rng, world);
+    const m = tryMission(type, seed, rng, world, mode);
     if (m) { m.attempt = attempt; return m; }
   }
   throw new Error(`임무를 만들 수 없음: ${type} ${seed}`);
 }
 
-function tryMission(type, seed, rng, world) {
+/** 7단계 분대 모드: 디렉터 적 규모를 enemyScale 배 (분대 하나 최대 7명) */
+function scaleEnemies(m) {
+  const k = CONFIG.allies.enemyScale, E = m.enemies;
+  const sc = (n) => Math.min(7, Math.max(n, Math.round(n * k)));
+  for (const p of E.patrols) p.size = sc(p.size);
+  for (const a of E.ambushes) a.size = sc(a.size);
+  if (E.convoy) for (const q of E.convoy.squads) q.size = sc(q.size);
+  if (E.camp) { E.camp.rest = sc(E.camp.rest); E.camp.sentries = Math.min(4, sc(E.camp.sentries)); }
+  if (E.reinforce) E.reinforce.size = sc(E.reinforce.size);
+}
+
+function tryMission(type, seed, rng, world, mode = 'solo') {
   const A = analyzeWorld(world);
   const M = CONFIG.mission;
   const start = { ...rng.pick(A.starts) };
   const m = {
-    type, seed, label: MISSION_LABELS[type],
+    type, seed, label: MISSION_LABELS[type], mode,
     start, objectives: [], extraction: null, camp: null, ambushSite: null,
     enemies: { patrols: [], ambushes: [], camp: null, convoy: null, reinforce: null },
     traces: [], carve: [], marks: [], routeLength: 0,
@@ -304,6 +317,12 @@ function tryMission(type, seed, rng, world) {
   else if (type === 'ambush') plan = planAmbush(m, rng, world, A);
   else plan = planRaid(m, rng, world, A);
   if (!plan) return null;
+  // ---- 7단계: 분대 모드 — 분대원 명단 · 적 규모 늘림 · 습격 야영지의 적 박격포
+  if (mode === 'squad') {
+    m.squad = makeRoster(seed, CONFIG.allies.size);
+    scaleEnemies(m);
+    if (type === 'raid' && m.camp) m.enemies.mortar = { x: m.camp.x, z: m.camp.z };
+  }
   // ---- 회수 지점: 마지막 목표에서 70m 이상, 투입 지점에서 60m 이상
   const last = m.objectives[m.objectives.length - 1];
   const exCands = A.extractions.filter((e) => dist(e, last) > 70 && dist(e, start) > 60);
@@ -637,5 +656,12 @@ function briefing(m, rng) {
     weather: weatherLine(m),
     night: nightLine(m),
     equipment: ['7.62mm 소총', '탄창 6개 (30발)', '낱발 탄약 90발', '붕대 2', '지혈대 1', '수통 2 (1L씩)', '손전등', '종이 지도 · 손목 나침반 · 시계'],
+    // 7단계 분대 모드: 분대원 이름·역할, 지원 화력
+    squad: m.squad ? m.squad.map((r) => `${r.name} — ${CONFIG.allies.roleLabels[r.job]}`) : null,
+    support: m.squad ? [
+      `지원 화력 (무전병 10m 안에서 M 지도로 요청): 박격포 ${CONFIG.support.mortar.count}회 · 포병 ${CONFIG.support.artillery.count}회${m.tod === 'night' || m.tod === 'dusk' ? ` · 조명탄 ${CONFIG.support.illum.count}회` : ''} · 헬기 보급 ${CONFIG.supply.heli.count}회 (개활지)`,
+      '시험 사격을 보고 수정하면 정확해진다. 아군 150m 안은 위험 근접 — 한 번 더 확인해야 쏜다.',
+      ...(m.enemies.mortar ? ['야영지에 적 박격포 1문이 있다는 정보. 교전이 길어지면 우리 쪽으로 쏠 것이다.'] : []),
+    ] : null,
   };
 }

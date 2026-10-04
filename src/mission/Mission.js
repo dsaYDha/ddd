@@ -134,6 +134,8 @@ export class Mission extends EventEmitter {
       wounds: s.wounds.slice(), confirmed: s.confirmed, estimated: s.estimated, enemyWounded: s.enemyWounded,
       objectives: this.objectives.map((o) => ({ label: o.label, done: o.done })), weapon: s.weapon,
       traps: s.traps ?? null,      // 6단계: 함정 (알아챔·걸림·해제)
+      // 7단계 분대 모드: 아군 사상자(이름별) · 오인 사격 · 지원 화력 · 보급
+      mode: s.mode ?? 'solo', squad: s.squad ?? null, friendlyFire: s.friendlyFire ?? null, support: s.support ?? null, supply: s.supply ?? null,
     };
   }
 }

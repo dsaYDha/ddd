@@ -12,6 +12,9 @@
 //  청각: 들은 소리로는 대략적인 위치만 — 오차 = 거리 × errorFrac (평균), 방향은 무작위.
 //   총성은 거리/음속 뒤에 들리고, 직전 crackWindow 초 안에 근접 탄('딱')을 들었으면 방향을 크게 헷갈린다
 //   (각도 오차 crackAngleDeg, 거리 오차 crackDistFrac).
+//  7단계: 표적이 여럿 (적 → 플레이어 + 아군 분대원, 아군 → 적 병사들) — 시각 상태(발견 수치·투과율·거리·보임)는 표적마다 '추적'(Track)에
+//   따로 두고, 소리·'딱'·경계 수준·개인차는 병사 하나에 하나. meter·seen·distance 같은 읽기/쓰기는 지금 '주목'하는 추적(focus)을 가리킨다
+//   (표적이 플레이어 하나뿐이면 4~6단계와 똑같다 — 첫 표적은 기본 추적을 그대로 물려받음).
 // =====================================================================
 import { CONFIG } from '../config.js';
 
@@ -54,12 +57,10 @@ export function estimateSound(src, listener, rng, crack = false) {
   return { x, z, error: err, distance: d, crack: false };
 }
 
-export class Perception {
-  /** @param {{ rng: object, sharpness?: number }} opts */
-  constructor(opts = {}) {
-    const V = CONFIG.ai.vision;
-    this.rng = opts.rng;
-    this.sharpness = opts.sharpness ?? (this.rng ? this.rng.range(V.sharpness[0], V.sharpness[1]) : 1);
+/** 7단계: 표적 하나에 대한 시각 상태 */
+export class Track {
+  constructor(target = null) {
+    this.target = target;
     this.meter = 0;               // 발견 수치 (1 이상 = 발견)
     this.visibility = 0;          // 마지막 레이캐스트 투과율 (0~1)
     this.visibilityAge = Infinity;
@@ -70,73 +71,119 @@ export class Perception {
     this.seen = false;            // 지금 보고 있음 (발견 + 보임)
     this.lastSeen = -Infinity;
     this.detectedAt = -Infinity;
+    this.flashCheck = -Infinity;  // 총구 화염 확인 (AI 사수는 0.2초에 한 번)
+  }
+}
+
+const FOCUS_KEYS = ['meter', 'visibility', 'visibilityAge', 'inView', 'angleDeg', 'distance', 'rate', 'seen', 'lastSeen', 'detectedAt'];
+
+export class Perception {
+  /** @param {{ rng: object, sharpness?: number }} opts */
+  constructor(opts = {}) {
+    const V = CONFIG.ai.vision;
+    this.rng = opts.rng;
+    this.sharpness = opts.sharpness ?? (this.rng ? this.rng.range(V.sharpness[0], V.sharpness[1]) : 1);
+    this.tracks = new Map();      // 표적 → Track
+    this.focus = new Track(null); // 지금 주목하는 추적 (첫 표적이 물려받음)
     this.lastCrack = -Infinity;
     this.pending = [];            // 늦게 들리는 소리 (총성: 거리/음속)
     this.alertMul = 1;            // 순찰 경계 수준 (수색 포기 후 높아짐)
   }
 
+  /** 표적의 추적 (없으면 만듦 — 아직 표적이 없으면 기본 추적을 그대로 씀) */
+  track(target) {
+    if (!target) return this.focus;
+    let t = this.tracks.get(target);
+    if (t) return t;
+    if (this.focus.target === null && this.tracks.size === 0) { t = this.focus; t.target = target; }
+    else t = new Track(target);
+    this.tracks.set(target, t);
+    return t;
+  }
+
+  /** 표적이 사라짐 (죽음·제거) — 주목하던 추적이면 다른 추적으로 */
+  drop(target) {
+    const t = this.tracks.get(target);
+    if (!t) return;
+    this.tracks.delete(target);
+    if (this.focus === t) {
+      let best = null;
+      for (const k of this.tracks.values()) if (!best || k.meter > best.meter) best = k;
+      this.focus = best ?? new Track(null);
+    }
+  }
+
+  setFocus(track) { if (track) this.focus = track; }
+
   /** 시야 기하 (레이 없이): 거리·각도·시야각 안 여부 */
-  geometry(eye, lookYaw, target) {
+  geometry(eye, lookYaw, target, tr = this.focus) {
     const V = CONFIG.ai.vision;
     const dx = target.x - eye.x, dz = target.z - eye.z;
     const d = Math.hypot(dx, dz);
     const fx = -Math.sin(lookYaw), fz = -Math.cos(lookYaw);
     const c = d > 1e-6 ? (dx * fx + dz * fz) / d : 1;
-    this.angleDeg = Math.acos(Math.max(-1, Math.min(1, c))) / DEG;
-    this.distance = Math.hypot(d, target.y - eye.y);
-    this.inView = this.distance <= V.range && (this.angleDeg <= V.fovDeg / 2 || this.distance <= V.nearDistance);
-    return this.inView;
+    tr.angleDeg = Math.acos(Math.max(-1, Math.min(1, c))) / DEG;
+    tr.distance = Math.hypot(d, target.y - eye.y);
+    tr.inView = tr.distance <= V.range && (tr.angleDeg <= V.fovDeg / 2 || tr.distance <= V.nearDistance);
+    return tr.inView;
   }
 
   /** 레이캐스트 결과 반영 (EnemyManager 예산) */
-  setVisibility(v) {
-    this.visibility = v;
-    this.visibilityAge = 0;
+  setVisibility(v, tr = this.focus) {
+    tr.visibility = v;
+    tr.visibilityAge = 0;
   }
 
   /**
    * 한 프레임 누적. info: { exposure, speed, state, suppression, now }
    * @returns {boolean} 이번에 새로 발견했나
    */
-  accumulate(dt, info) {
+  accumulate(dt, info, tr = this.focus) {
     const V = CONFIG.ai.vision;
-    this.visibilityAge += dt;
-    let vis = this.inView ? this.visibility : 0;
+    tr.visibilityAge += dt;
+    let vis = tr.inView ? tr.visibility : 0;
     // 아주 가까우면 잎에 가려도 (숨소리·흔들리는 풀·냄새) 알아챌 수 있다
     const NS = V.nearSense;
-    if (NS && this.inView && this.distance < NS.distance) vis = Math.max(vis, NS.visibility * (1 - this.distance / NS.distance));
+    if (NS && tr.inView && tr.distance < NS.distance) vis = Math.max(vis, NS.visibility * (1 - tr.distance / NS.distance));
     // 5단계: 안개·비 — 화면 안개와 같은 식 exp(−(밀도·거리)²), 맑은 한낮(fogBase) 대비만큼 덜 보인다
     const fd = info.fogD ?? 0;
     if (fd > V.fogBase && vis > 0) {
-      const d = this.distance;
+      const d = tr.distance;
       vis *= Math.exp(-((fd * d) ** 2 - (V.fogBase * d) ** 2));
     }
-    this.rate = detectionRate({
-      distance: this.distance, exposure: info.exposure, visibility: vis, speed: info.speed, angleDeg: this.angleDeg,
+    tr.rate = detectionRate({
+      distance: tr.distance, exposure: info.exposure, visibility: vis, speed: info.speed, angleDeg: tr.angleDeg,
       state: info.state, sharpness: this.sharpness, suppression: info.suppression, alertMul: this.alertMul, ambient: info.ambient,
     }) + (info.lampRate ?? 0);
-    const before = this.meter;
-    if (this.rate > 0) {
+    const before = tr.meter;
+    if (tr.rate > 0) {
       // 매 순간 집중이 들쭉날쭉 (한 번 훑어보고 놓치기도) — 평균 1
-      this.meter += this.rate * dt * (this.rng ? this.rng.range(0.4, 1.6) : 1);
-    } else if (this.meter > 0) {
-      this.meter = Math.max(0, this.meter - V.decay * dt);
+      tr.meter += tr.rate * dt * (this.rng ? this.rng.range(0.4, 1.6) : 1);
+    } else if (tr.meter > 0) {
+      tr.meter = Math.max(0, tr.meter - V.decay * dt);
     }
-    if (this.meter > 1.5) this.meter = 1.5;
-    this.seen = this.meter >= 1 && vis >= V.visibleMin;
-    if (this.seen) this.lastSeen = info.now;
-    const fresh = before < 1 && this.meter >= 1;
-    if (fresh) this.detectedAt = info.now;
+    if (tr.meter > 1.5) tr.meter = 1.5;
+    tr.seen = tr.meter >= 1 && vis >= V.visibleMin;
+    if (tr.seen) tr.lastSeen = info.now;
+    const fresh = before < 1 && tr.meter >= 1;
+    if (fresh) tr.detectedAt = info.now;
     return fresh;
   }
 
   /** 총구 화염을 봄 → 즉시 발견 */
-  flash(now) {
-    const fresh = this.meter < 1;
-    this.meter = Math.max(this.meter, 1.2);
-    this.lastSeen = now;
-    if (fresh) this.detectedAt = now;
+  flash(now, tr = this.focus) {
+    const fresh = tr.meter < 1;
+    tr.meter = Math.max(tr.meter, 1.2);
+    tr.lastSeen = now;
+    if (fresh) tr.detectedAt = now;
     return fresh;
+  }
+
+  /** 7단계: 아무 표적이나 지금 보고 있나 */
+  get seesAny() {
+    if (this.focus.seen) return true;
+    for (const t of this.tracks.values()) if (t.seen) return true;
+    return false;
   }
 
   /** 소리 듣기 예약 (delay 초 뒤 처리) */
@@ -156,4 +203,13 @@ export class Perception {
     this.pending.length = w;
     return out;
   }
+}
+
+// 주목하는 추적의 값을 그대로 읽고 쓰는 속성 (4~6단계 코드·테스트가 perception.meter 등을 직접 씀)
+for (const k of FOCUS_KEYS) {
+  Object.defineProperty(Perception.prototype, k, {
+    get() { return this.focus[k]; },
+    set(v) { this.focus[k] = v; },
+    configurable: true,
+  });
 }

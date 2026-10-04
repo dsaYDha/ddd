@@ -18,6 +18,11 @@
 //   · 조명탄: 밤에 소리를 듣거나(반경 hearNoiseMin 이상) 교전이 시작되면 분대가 쏨 (requestFlare) — flares (Night.Flares)
 //   · 적 손전등: 순찰 분대 일부 병사(hasLamp)가 밤 순찰·수색 중 켬 (lampOn, lampDir) — lampLightAt() 으로 비친 빛
 //  이벤트 추가: 'flareLaunch' {flare, soldier}
+//  7단계: 두 진영 — 병사마다 faction ('enemy' | 'friend' = 아군 분대원, ai/Ally). 적의 표적 = 플레이어 + 아군 분대원,
+//   아군의 표적 = 적 병사들. 감지(Perception)는 표적마다 추적을 따로 두고, 레이 예산은 (병사, 표적) 쌍을 돌아가며 나눔.
+//   소리·총구 화염은 '다른 편'이 낸 것만 표적 정보 (같은 편 총성·고함·폭발은 경계 신호). 사선 확인: 아군은 플레이어도 봄.
+//   표적 노출도: 플레이어는 Game 이 넣고, 병사는 0.25초마다 돌아가며 (자세·식생·빛 — 1단계 노출도와 같은 식).
+//   friendSquad (ai/FriendSquad) 는 squads 와 따로 (적 분대 목록·디렉터·체크포인트에 섞이지 않게).
 // =====================================================================
 import { CONFIG } from '../config.js';
 import { EventEmitter } from '../core/EventEmitter.js';
@@ -27,7 +32,8 @@ import { Wildlife } from './Wildlife.js';
 import { Squad } from './Squad.js';
 import { Soldier } from './Soldier.js';
 import { estimateSound } from './Perception.js';
-import { Flares, lampLight } from '../world/Night.js';
+import { Flares, lampLight, ambientLight } from '../world/Night.js';
+import { computeExposure } from '../human/Exposure.js';
 
 const yawOf = (dx, dz) => Math.atan2(-dx, -dz);
 const rr = (rng, r) => rng.range(r[0], r[1]);
@@ -53,11 +59,22 @@ export class EnemyManager extends EventEmitter {
     this.soldiers = [];
     this.squads = [];
     this.pits = [];
-    this.target = null;
+    this.target = null;          // 플레이어 (4~6단계 이름 — player 와 같음)
+    this.player = null;
+    this.friendSquad = null;     // 7단계: 아군 분대 (ai/FriendSquad)
+    this.traps = null;           // 7단계: 함정 (첨병이 찾음 — Game/테스트가 넣음)
+    this.env = { daylight: 1, sunOffset: { x: 0, z: 0 } };   // 7단계: 병사 노출도용 빛 (Game 이 넣음)
+    this.dayLight = 1;           // 낮 빛 비율 (밤 0)
     this.time = 0;
     this._rayCursor = 0;
     this._paths = [];
     this._byMotor = new Map();
+    this._byPerson = new Map();
+    this._alive = [];
+    this._tEnemy = [];           // 적 병사가 볼 표적 (플레이어 + 아군)
+    this._tFriend = [];          // 아군이 볼 표적 (적 병사)
+    this._pairs = [];
+    this._expoCursor = 0;
     this._due = [];
     this._movers = [];
     this._tgtInfo = { exposure: 0.5, speed: 0, state: 'patrol', suppression: 0, now: 0, ambient: 1, lampRate: 0 };
@@ -75,9 +92,12 @@ export class EnemyManager extends EventEmitter {
     }
   }
 
-  setTarget(t) { this.target = t; }
+  setTarget(t) { this.target = t; this.player = t; }
 
-  get active() { return this.soldiers.filter((s) => s.alive); }
+  /** 살아 있는 적 병사 (생성 상한 maxActive) */
+  get active() { return this.soldiers.filter((s) => s.alive && s.faction !== 'friend'); }
+  /** 7단계: 아군 분대원 (죽은 사람 포함) */
+  get friends() { return this.soldiers.filter((s) => s.faction === 'friend'); }
 
   // =================================================================
   // 생성
@@ -250,22 +270,28 @@ export class EnemyManager extends EventEmitter {
   _addSoldier(s) {
     this.soldiers.push(s);
     this._byMotor.set(s.motor, s);
+    this._byPerson.set(s.person, s);
     // 화면·소리 쪽 (Game) 이 병사마다 구독하지 않게 다시 보냄: 신음·핏자국·쓰러짐·식물 헤치는 소리
     for (const ev of ['vocal', 'bleed', 'fall']) s.on(ev, (e) => this.emit(ev, { ...e, soldier: s }));
     s.motor.on('rustle', (e) => this.emit('rustle', { soldier: s, evt: e }));
-    s.motor.on('footstep', (e) => { if (this.footprints) this.footprints.step(s.motor, e, 'enemy'); });
-    // 시체가 너무 많으면 오래된 것부터 치움
-    const dead = this.soldiers.filter((x) => !x.alive);
+    s.motor.on('footstep', (e) => { if (this.footprints) this.footprints.step(s.motor, e, s.faction === 'friend' ? 'friend' : 'enemy'); });
+    // 시체가 너무 많으면 오래된 적 시체부터 치움 (아군 시체는 물자 회수·결과 집계에 남김)
+    const dead = this.soldiers.filter((x) => !x.alive && x.faction !== 'friend');
     if (this.soldiers.length > MAX_BODIES && dead.length) this._remove(dead[0]);
   }
 
   _remove(s) {
     s.dispose();
     this._byMotor.delete(s.motor);
+    this._byPerson.delete(s.person);
     const i = this.soldiers.indexOf(s);
     if (i >= 0) this.soldiers.splice(i, 1);
     this.pits = this.pits.filter((p) => p.soldier !== s);
+    for (const o of this.soldiers) o.perception.drop(s);
   }
+
+  /** 사람(Person) → 병사 (없으면 null) */
+  soldierOf(person) { return this._byPerson.get(person) ?? null; }
 
   /** 5단계: 분대 하나를 맵에서 치움 (보급 행렬이 맵 가장자리로 빠져나감 — 플레이어 시야 밖일 때만 부름) */
   removeSquad(sq) {
@@ -274,7 +300,7 @@ export class EnemyManager extends EventEmitter {
     if (i >= 0) this.squads.splice(i, 1);
   }
 
-  /** 모두 제거 */
+  /** 모두 제거 (적·아군 — 임무 시작) */
   clear() {
     for (const s of this.soldiers.slice()) this._remove(s);
     this.squads.length = 0;
@@ -282,7 +308,26 @@ export class EnemyManager extends EventEmitter {
     this._paths.length = 0;
     this.flares.clear();
     this._pendingFlares.length = 0;
+    this.friendSquad = null;
     this.emit('clear', {});
+  }
+
+  /** 7단계: 적만 제거 (F4 '모두 제거' — 아군 분대는 남김) */
+  clearEnemies() {
+    for (const s of this.soldiers.slice()) if (s.faction !== 'friend') this._remove(s);
+    this.squads.length = 0;
+    this.pits.length = 0;
+    this._paths = this._paths.filter((r) => r.s.faction === 'friend');
+    this.emit('clear', { enemiesOnly: true });
+  }
+
+  /** 7단계: 아군 분대만 제거 (디버그 '분대 다시 생성') */
+  clearFriends() {
+    for (const s of this.soldiers.slice()) if (s.faction === 'friend') this._remove(s);
+    this._paths = this._paths.filter((r) => r.s.faction !== 'friend');
+    this.friendSquad?.dispose?.();
+    this.friendSquad = null;
+    this.emit('clear', { friendsOnly: true });
   }
 
   dispose() {
@@ -404,13 +449,17 @@ export class EnemyManager extends EventEmitter {
     // 동물 정적: 움직이는 사람들
     const mv = this._movers;
     mv.length = 0;
-    const t = this.target;
+    const t = this.player;
     if (t && t.motor) mv.push({ x: t.motor.position.x, z: t.motor.position.z, speed: t.motor.speed });
     for (const s of this.soldiers) if (s.alive) mv.push({ x: s.motor.position.x, z: s.motor.position.z, speed: s.motor.speed });
     this.wildlife.update(dt, mv);
     this._updateFlares(dt);
     if (!this.soldiers.length) return;
+    const alive = this._alive;
+    alive.length = 0;
+    for (const s of this.soldiers) if (s.alive) alive.push(s);
     this._updateLamps();
+    this._updateExposures(dt);
     this._perceive(dt);
     // 늦게 들리는 소리
     for (const s of this.soldiers) {
@@ -418,57 +467,163 @@ export class EnemyManager extends EventEmitter {
       for (const e of s.perception.due(this.time, this._due)) s.onSound(e);
     }
     for (const sq of this.squads) sq.update(dt);
+    this.friendSquad?.update(dt);
     for (const s of this.soldiers) s.update(dt);
     this._syncDrags();
+    this._syncCarries();
     this._servePaths();
   }
 
+  /** 7단계: 병사(표적으로서)의 노출도·빛 — 0.25초에 한 번씩 돌아가며 (자세·식생·빛, 1단계 노출도와 같은 식) */
+  _updateExposures(dt) {
+    // 누군가의 표적인 병사만 (아군이 없으면 적 병사는 표적이 아님 — 단독 모드에선 계산하지 않음)
+    const cand = this._expoCand || (this._expoCand = []);
+    cand.length = 0;
+    let hasF = false, hasE = false;
+    for (const s of this._alive) { if (s.faction === 'friend') hasF = true; else hasE = true; }
+    for (const s of this._alive) if (s.faction === 'friend' ? hasE : hasF) cand.push(s);
+    const alive = cand, n = alive.length;
+    if (!n) return;
+    const want = Math.min(n, Math.ceil(n * dt / 0.25) + 1);
+    const env = this.env, lightArg = this._expoLight || (this._expoLight = { daylight: 1, sunOffset: { x: 0, z: 0 }, ambient: 1, extra: 0 });
+    for (let k = 0; k < want; k++) {
+      const s = alive[(this._expoCursor + k) % n];
+      const p = s.motor.position;
+      const canopy = this.query.getCanopyCover ? this.query.getCanopyCover(p.x, p.z) : 0;
+      const amb = ambientLight(this.dayLight ?? 1, this.moon, canopy);
+      let extra = this.flares.list.length ? this.flares.lightAt(p.x, p.z, canopy) : 0;
+      if (this.night > 0.2) {
+        if (s.faction === 'friend') extra = Math.max(extra, this.lampLightAt(p.x, p.y + 1.1, p.z));
+        else { const L = this.player?.lamp?.(); if (L) extra = Math.max(extra, lampLight(L, p.x, p.y + 1.1, p.z)); }
+      }
+      lightArg.daylight = env.daylight ?? 1; lightArg.sunOffset = env.sunOffset ?? lightArg.sunOffset; lightArg.ambient = amb; lightArg.extra = extra;
+      s._expo = computeExposure(s.motor, this.query, lightArg).value;
+      s._amb = amb;
+    }
+    this._expoCursor = (this._expoCursor + want) % n;
+  }
+
   // ---- 시각 -----------------------------------------------------------
+  /**
+   * 병사마다 '다른 편' 표적들의 추적을 갱신: 시야 기하 (싸다) → 레이캐스트 (예산 안에서 쌍을 돌아가며) → 발견 수치 누적.
+   * 표적이 플레이어 하나뿐이면 4~6단계와 같은 순서·같은 예산 (쌍 = 병사).
+   */
   _perceive(dt) {
-    const t = this.target, V = CONFIG.ai.vision, now = this.time;
-    const alive = this.soldiers.filter((s) => s.alive);
-    if (!t || !t.alive || !t.person.hitboxes.length) {
-      for (const s of alive) { s.perception.inView = false; s.perception.accumulate(dt, this._tgtInfo); }
-      return;
-    }
-    const caps = t.person.hitboxes;
-    const chest = caps.chest;
-    const info = this._tgtInfo;
-    info.exposure = typeof t.exposure === 'function' ? t.exposure() : (t.exposure ?? 0.5);
-    info.speed = Math.hypot(t.motor.velocity.x, t.motor.velocity.z);
-    info.fogD = this.fogDensity ?? 0;   // 5단계: 안개·비 (Game 이 대기 안개 밀도를 넣음)
-    info.now = now;
-    info.ambient = typeof t.ambient === 'function' ? t.ambient() : (t.ambient ?? 1);   // 6단계: 그 자리 빛 수준
-    const lamp = typeof t.lamp === 'function' ? t.lamp() : (t.lamp ?? null);
-    for (const s of alive) s.perception.geometry(s.eye, s.look.yaw, chest);
-    // 레이 예산: 시야 안 병사를 돌아가며 (오래된 것부터)
-    let budget = CONFIG.ai.raysPerFrame;
-    const n = alive.length;
-    for (let k = 0; k < n && budget > 0; k++) {
-      const s = alive[(this._rayCursor + k) % n];
-      const P = s.perception;
-      if (!P.inView || P.visibilityAge < 0.12) continue;
-      budget -= this._visibility(s, caps, 2);
-    }
-    this._rayCursor = (this._rayCursor + 1) % Math.max(1, n);
+    const V = CONFIG.ai.vision, now = this.time;
+    const alive = this._alive;
+    const pl = this.player;
+    const plOk = !!(pl && pl.alive && pl.person.hitboxes.length);
+    const tE = this._tEnemy, tF = this._tFriend;
+    tE.length = 0; tF.length = 0;
+    if (plOk) tE.push(pl);
     for (const s of alive) {
+      if (!s.person.hitboxes.length) continue;
+      if (s.faction === 'friend') tE.push(s); else tF.push(s);
+    }
+    for (const t of tE) this._targetInfo(t);
+    for (const t of tF) this._targetInfo(t);
+    // 시야 기하 (모든 쌍)
+    const pairs = this._pairs;
+    pairs.length = 0;
+    for (const s of alive) {
+      const list = s.faction === 'friend' ? tF : tE;
       const P = s.perception;
-      info.state = PSTATE[s.squad?.state] ?? 'patrol';
-      // 야영지에서 쉬는 병사는 잘 못 봄 (이야기·불·쉼), 보초는 보통보다 조금 더 살핌
-      if (s.mode === 'post') info.state = s.postRole === 'rest' ? 'rest' : 'sentry';
-      info.suppression = s.suppression;
-      info.lampRate = lamp ? this._lampRate(s, lamp) : 0;
-      const fresh = P.accumulate(dt, info);
-      if (fresh) s.onDetect();
-      // 반쯤 알아챔 → 의심 (그쪽을 조사) — 대략적인 위치만
-      if (!fresh && P.meter >= V.suspicious && P.meter < 1 && s.squad && now > (s._suspAt ?? -Infinity)) {
-        s._suspAt = now + 5;
-        const err = (1 - P.meter) * 8 + 2;
-        const a = s.rng.range(0, Math.PI * 2);
-        const p = t.motor.position;
-        s.squad.onSuspicious(s, { x: p.x + Math.cos(a) * err, z: p.z + Math.sin(a) * err, error: err, distance: P.distance }, 'glimpse');
+      for (let i = 0; i < list.length; i++) {
+        const t = list[i];
+        const tr = P.track(t);
+        P.geometry(s.eye, s.look.yaw, t.person.hitboxes.chest, tr);
+        pairs.push(s, tr);
       }
     }
+    // 레이 예산: 시야 안 쌍을 돌아가며 (오래된 것부터)
+    let budget = CONFIG.ai.raysPerFrame;
+    const n = pairs.length / 2;
+    for (let k = 0; k < n && budget > 0; k++) {
+      const i = ((this._rayCursor + k) % n) * 2;
+      const s = pairs[i], tr = pairs[i + 1];
+      if (!tr.inView || tr.visibilityAge < 0.12) continue;
+      budget -= this._visibility(s, tr, tr.target.person.hitboxes, 2);
+    }
+    this._rayCursor = (this._rayCursor + 1) % Math.max(1, n);
+    // 누적
+    for (let i = 0; i < pairs.length; i += 2) {
+      const s = pairs[i], tr = pairs[i + 1], t = tr.target, P = s.perception;
+      const info = this._infoFor(s, t);
+      const fresh = P.accumulate(dt, info, tr);
+      if (fresh) { this._setFocus(s, tr); s.onDetect(); }
+      // 반쯤 알아챔 → 의심 (그쪽을 조사) — 대략적인 위치만
+      if (!fresh && tr.meter >= V.suspicious && tr.meter < 1 && s.squad && now > (s._suspAt ?? -Infinity)) {
+        s._suspAt = now + 5;
+        const err = (1 - tr.meter) * 8 + 2;
+        const a = s.rng.range(0, Math.PI * 2);
+        const p = t.motor.position;
+        s.squad.onSuspicious(s, { x: p.x + Math.cos(a) * err, z: p.z + Math.sin(a) * err, error: err, distance: tr.distance }, 'glimpse');
+      }
+    }
+    // 표적이 없어진 추적: 플레이어(죽음)는 흐려지게, 죽은 병사는 버림 → 주목할 추적 고르기
+    for (const s of alive) {
+      const P = s.perception;
+      if (P.tracks.size === 0) {
+        // 표적이 하나도 없음 (4~6단계: 플레이어가 죽음) — 주목하던 추적이 흐려짐
+        P.focus.inView = false;
+        P.accumulate(dt, this._tgtInfo, P.focus);
+        continue;
+      }
+      for (const [t, tr] of P.tracks) {
+        if (t === pl) {
+          if (!plOk) { tr.inView = false; P.accumulate(dt, this._tgtInfo, tr); }
+        } else if (!t.alive || !this._byPerson.has(t.person)) P.drop(t);
+      }
+      if (P.tracks.size > 1) this._chooseFocus(s);
+    }
+  }
+
+  /** 표적 정보 (프레임마다 표적 하나에 한 번) */
+  _targetInfo(t) {
+    const pi = t._pinfo || (t._pinfo = { exposure: 0.5, speed: 0, ambient: 1, lamp: null });
+    pi.exposure = typeof t.exposure === 'function' ? t.exposure() : (t.exposure ?? 0.5);
+    pi.speed = Math.hypot(t.motor.velocity.x, t.motor.velocity.z);
+    pi.ambient = typeof t.ambient === 'function' ? t.ambient() : (t.ambient ?? 1);   // 6단계: 그 자리 빛 수준
+    pi.lamp = typeof t.lamp === 'function' ? t.lamp() : null;   // 플레이어 손전등만 (병사의 lamp 는 적 손전등 자료)
+  }
+
+  /** 병사 s 가 표적 t 를 볼 때의 누적 정보 (재사용 객체) */
+  _infoFor(s, t) {
+    const info = this._tgtInfo, pi = t._pinfo;
+    info.exposure = pi.exposure;
+    info.speed = pi.speed;
+    info.fogD = this.fogDensity ?? 0;   // 5단계: 안개·비 (Game 이 대기 안개 밀도를 넣음)
+    info.now = this.time;
+    info.ambient = pi.ambient;
+    info.state = s.faction === 'friend' ? (s.squad?.state === 'contact' ? 'engaged' : 'suspicious') : (PSTATE[s.squad?.state] ?? 'patrol');
+    // 야영지에서 쉬는 병사는 잘 못 봄 (이야기·불·쉼), 보초는 보통보다 조금 더 살핌
+    if (s.mode === 'post') info.state = s.postRole === 'rest' ? 'rest' : 'sentry';
+    info.suppression = s.suppression;
+    info.lampRate = pi.lamp && s.faction !== 'friend' ? this._lampRate(s, pi.lamp) : 0;
+    return info;
+  }
+
+  /** 주목할 표적: 보이는 것 중 가까운 것 > 발견했던 것 중 최근 > 발견 수치 큰 것 (지금 것에 덤을 줘 자주 바뀌지 않게) */
+  _chooseFocus(s) {
+    const P = s.perception, now = this.time, cur = P.focus;
+    const score = (tr) => (tr.seen ? 1000 - tr.distance
+      : tr.meter >= 1 ? 600 - Math.min(300, (now - tr.lastSeen) * 10) - tr.distance * 0.1
+        : tr.meter * 300 - tr.distance * 0.05);
+    let best = null, bs = -Infinity;
+    if (cur.target && cur.target.alive !== false && P.tracks.get(cur.target) === cur) { best = cur; bs = score(cur) + 25; }
+    for (const tr of P.tracks.values()) {
+      if (tr === cur || tr.target?.alive === false) continue;
+      const sc = score(tr);
+      if (sc > bs) { bs = sc; best = tr; }
+    }
+    if (best && best !== cur) this._setFocus(s, best);
+  }
+
+  _setFocus(s, tr) {
+    const P = s.perception;
+    if (P.focus === tr) return;
+    P.setFocus(tr);
+    if (s.fire) s.fire.lastTargetSeen = false;   // 새 표적 — 다시 겨눔
   }
 
   /**
@@ -564,7 +719,7 @@ export class EnemyManager extends EventEmitter {
   }
 
   /** 레이 최대 maxRays 개로 투과율 (가슴 → 머리 → 골반 중 가장 잘 보이는 값). 쓴 레이 수를 돌려줌 */
-  _visibility(s, caps, maxRays) {
+  _visibility(s, tr, caps, maxRays) {
     const q = this.query, eye = s.eye;
     let best = 0, used = 0;
     const pts = [caps.chest, partCenter(caps, 'head'), partCenter(caps, 'pelvis')];
@@ -579,31 +734,39 @@ export class EnemyManager extends EventEmitter {
       if (v > best) best = v;
       if (best > 0.5) break;
     }
-    s.perception.setVisibility(best);
+    s.perception.setVisibility(best, tr);
     this.stats.rays += used;
     return used;
   }
 
   // ---- 소리 -----------------------------------------------------------
+  /**
+   * 소음 이벤트 → 반경 안 병사에게 거리/음속 뒤 전달. 다른 편 소리는 표적 정보 (발소리·헤치는 소리까지),
+   * 같은 편 소리는 총성·고함·폭발만 (경계 신호 — 같은 분대끼리는 무시). 7단계: 출처 없는 폭발 (포탄) 은 모두 듣는다.
+   */
   _onNoise(e) {
     if (e.kind === 'gunshot' || e.kind === 'explosion') this.wildlife.gunshot(e.x, e.z);
     if (!this.soldiers.length) return;
     const H = CONFIG.ai.hearing;
     if (H.ignoreKinds.includes(e.kind)) return;
-    const t = this.target;
-    const fromTarget = t && e.source === t.motor;
+    const pl = this.player;
+    const fromPlayer = !!(pl && e.source === pl.motor);
     const fromSoldier = this._byMotor.get(e.source) ?? null;
-    if (!fromTarget && !fromSoldier) return;
-    if (fromSoldier && e.kind !== 'gunshot' && e.kind !== 'shout') return;   // 같은 편 발소리는 무시
+    const neutral = !fromPlayer && !fromSoldier && e.kind === 'explosion';
+    if (!fromPlayer && !fromSoldier && !neutral) return;
+    const srcFaction = fromPlayer ? 'friend' : fromSoldier ? fromSoldier.faction : (e.faction ?? 'none');
+    e.srcFaction = srcFaction;
     if (fromSoldier) e.squad = fromSoldier.squad;
     // 5단계: 플레이어가 주운 적 소총으로 쏘면 — 소리만 들은 적은 잠깐 아군 총성으로 착각 (첫 반응이 1~2초 늦음)
-    const confused = fromTarget && e.kind === 'gunshot' && e.family === 'enemy';
+    const confused = fromPlayer && e.kind === 'gunshot' && e.family === 'enemy';
     for (const s of this.soldiers) {
       if (!s.alive || s === fromSoldier) continue;
+      const same = srcFaction === s.faction;
+      if (same && e.kind !== 'gunshot' && e.kind !== 'shout' && e.kind !== 'explosion') continue;   // 같은 편 발소리는 무시
       const d = Math.hypot(e.x - s.motor.position.x, e.z - s.motor.position.z);
       if (d > e.radius) continue;
       if (fromSoldier && fromSoldier.squad === s.squad) continue;
-      const extra = confused && !s.perception.seen ? this.rng.range(CONFIG.ammo.confusion[0], CONFIG.ammo.confusion[1]) : 0;
+      const extra = confused && s.faction !== 'friend' && !s.perception.seen ? this.rng.range(CONFIG.ammo.confusion[0], CONFIG.ammo.confusion[1]) : 0;
       s.perception.hear(e, d / H.speedOfSound + extra, this.time);
       this.stats.heard++;
     }
@@ -615,9 +778,16 @@ export class EnemyManager extends EventEmitter {
   }
 
   // ---- 총구 화염·명중 ----------------------------------------------------
+  /** 총구 화염: 다른 편 병사 중 시야 안이고 조금이라도 보이면 즉시 발견 (정확한 위치). 7단계: AI 사수는 쌍마다 0.2초에 한 번만 확인 */
   _onShot(e) {
-    const t = this.target;
-    if (!t || e.shooter !== t.person) return;
+    const pl = this.player, now = this.time;
+    let src = null, srcFaction = null;
+    if (pl && e.shooter === pl.person) { src = pl; srcFaction = 'friend'; }
+    else {
+      const sh = this._byPerson.get(e.shooter);
+      if (!sh) return;
+      src = sh; srcFaction = sh.faction;
+    }
     const V = CONFIG.ai.vision, q = this.query, NM = CONFIG.night.muzzle;
     const o = e.origin;
     // 6단계: 밤엔 총구 화염이 훨씬 멀리·넓게 보이고, 잎에 가려도 새어 보임
@@ -626,7 +796,10 @@ export class EnemyManager extends EventEmitter {
     const halfFov = (V.fovDeg + (NM.fovDeg - V.fovDeg) * nk) / 2;
     const visMin = V.flashVisibleMin + (NM.visibleMin - V.flashVisibleMin) * nk;
     for (const s of this.soldiers) {
-      if (!s.alive || s.perception.seen) continue;
+      if (!s.alive || s.faction === srcFaction) continue;
+      const tr = s.perception.track(src);
+      if (tr.seen) continue;
+      if (src !== pl) { if (now - tr.flashCheck < 0.2) continue; tr.flashCheck = now; }
       const eye = s.eye;
       const dx = o.x - eye.x, dy = o.y - eye.y, dz = o.z - eye.z;
       const d = Math.hypot(dx, dy, dz);
@@ -640,7 +813,7 @@ export class EnemyManager extends EventEmitter {
       const v = r.hit ? 0 : r.transmittance;
       if (v < visMin) continue;
       this.stats.flashes++;
-      if (s.perception.flash(this.time)) s.onDetect(false);
+      if (s.perception.flash(now, tr)) { this._setFocus(s, tr); s.onDetect(false); }
     }
   }
 
@@ -653,7 +826,7 @@ export class EnemyManager extends EventEmitter {
   // 병사가 부르는 것들
   // =================================================================
   /** 고함 (분대 의사소통·비명·도움 요청) — 소음 이벤트 + 'shout' (3D 음향) */
-  shout(s, kind, force = false) {
+  shout(s, kind, force = false, said = false) {
     if (!s || !s.alive && kind !== 'scream') return;
     const now = this.time;
     if (!force && now - (s._shoutAt ?? -Infinity) < SHOUT_GAP) return;
@@ -663,7 +836,7 @@ export class EnemyManager extends EventEmitter {
     const pos = { x: p.x, y: p.y + 1.5 - (s.pitDepth || 0), z: p.z };
     const radius = kind === 'scream' || kind === 'help' ? H.screamRadius : H.shoutRadius;
     if (this.noise) this.noise.emitNoise(pos, radius, 'shout', s.motor, { shoutKind: kind });
-    this.emit('shout', { soldier: s, kind, position: pos });
+    this.emit('shout', { soldier: s, kind, position: pos, said });   // said: 7단계 분대원 말 (자막·목소리는 'say')
   }
 
   requestPath(s, mode) {
@@ -679,6 +852,7 @@ export class EnemyManager extends EventEmitter {
       if (!r.s.alive || r.goal !== r.s.goal || !r.goal) continue;
       const d = Math.hypot(r.goal.x - r.s.motor.position.x, r.goal.z - r.s.motor.position.z);
       const opts = { mode: r.mode, maxNodes: Math.min(CONFIG.ai.nav.maxNodes, 400 + d * d * 1.2) };
+      if (r.s.faction === 'friend') opts.ignoreHazards = true;   // 7단계: 아군은 적 함정 자리를 모름 (알아챈 것만 조향으로 비켜 감)
       let path = this.nav.findPath(r.s.motor.position, r.goal, opts);
       // 6단계: 함정 둘레 비용 때문에 노드 예산 안에 못 찾으면 비용 없이 다시 (함정은 조향으로 비켜 감)
       if (!path && this.nav.hazards.length) path = this.nav.findPath(r.s.motor.position, r.goal, { ...opts, ignoreHazards: true });
@@ -698,22 +872,27 @@ export class EnemyManager extends EventEmitter {
     return out;
   }
 
-  /** 사선에 아군이 있나 (가슴이 사선에서 clearance 안, 내 앞쪽) */
+  /** 사선에 같은 편이 있나 (가슴이 사선에서 clearance 안, 내 앞쪽). 7단계: 아군 분대원은 플레이어도 확인 */
   friendlyInLine(me, from, to) {
     const Fc = CONFIG.ai.fire;
     const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
     const L = Math.hypot(dx, dy, dz);
     if (L < 1) return false;
     const ux = dx / L, uy = dy / L, uz = dz / L;
-    for (const s of this.soldiers) {
-      if (s === me || !s.alive) continue;
-      const c = s.person.hitboxes.chest ?? s.motor.position;
+    const blocks = (c) => {
       const px = c.x - from.x, py = c.y - from.y, pz = c.z - from.z;
       const t = px * ux + py * uy + pz * uz;
-      if (t < 0.8 || t > L + 1.5) continue;
+      if (t < 0.8 || t > L + 1.5) return false;
       const qx = px - ux * t, qy = py - uy * t, qz = pz - uz * t;
-      if (Math.hypot(qx, qy, qz) < Fc.friendlyClearance) return true;
+      return Math.hypot(qx, qy, qz) < Fc.friendlyClearance;
+    };
+    const mine = me.faction ?? 'enemy';
+    for (const s of this.soldiers) {
+      if (s === me || !s.alive || (s.faction ?? 'enemy') !== mine) continue;
+      if (blocks(s.person.hitboxes.chest ?? s.motor.position)) return true;
     }
+    const pl = this.player;
+    if (mine === 'friend' && pl && pl.alive && blocks(pl.person.hitboxes.chest ?? pl.motor.position)) return true;
     return false;
   }
 
@@ -738,6 +917,44 @@ export class EnemyManager extends EventEmitter {
       wm.yaw = yawOf(p.x - wm.position.x, p.z - wm.position.z);
       w.look.yaw = wm.yaw;
     }
+  }
+
+  /** 7단계: 업힌 부상자 — 업은 사람 어깨 위 (몸이 어깨를 가로지름). 이동 컴포넌트는 멈춰 있고 위치만 따라감 */
+  _syncCarries() {
+    for (const s of this.soldiers) {
+      const c = s.carry;
+      if (!c || c.phase !== 'carry' || !c.wounded.alive) continue;
+      const w = c.wounded, p = s.motor.position, wm = w.motor;
+      // 엎드린 몸의 가운데 (원점에서 몸 방향 −0.5m) 가 어깨 위에 오게: 몸 방향 = 업은 사람 오른쪽
+      const yaw = s.motor.yaw + Math.PI / 2;
+      const bx = -Math.sin(yaw), bz = -Math.cos(yaw);
+      wm.position.x = p.x + bx * 0.55; wm.position.z = p.z + bz * 0.55;
+      wm.position.y = p.y;
+      wm.velocity.x = 0; wm.velocity.z = 0; wm.velocity.y = 0;
+      wm.yaw = yaw;
+      w.look.yaw = yaw;
+    }
+  }
+
+  /**
+   * 7단계: 헬기 소리 등 — radius m 안 적 분대가 그 지점을 확인하러 몰려옴 (교전 중이 아니면 수색)
+   * @returns {number} 움직인 분대 수
+   */
+  attractTo(point, radius) {
+    let n = 0;
+    for (const sq of this.squads) {
+      const al = sq.alive;
+      if (!al.length || sq.state === 'engaged' || sq.state === 'rout' || sq.state === 'retreat') continue;
+      const lead = sq.leader?.alive ? sq.leader : al[0];
+      const d = Math.hypot(lead.motor.position.x - point.x, lead.motor.position.z - point.z);
+      if (d > radius) continue;
+      sq.contact = { x: point.x, y: 0, z: point.z, time: this.time, uncertainty: 20 };
+      sq.threat = sq.contact;
+      if (sq.type === 'ambush' && sq.ambush && !sq.ambush.sprung) continue;   // 매복조는 자리를 지킴
+      sq.setState('search', { force: true });
+      n++;
+    }
+    return n;
   }
 
   /** F2 디버그·테스트: 병사 요약 */

@@ -112,14 +112,16 @@ export class Flares extends EventEmitter {
   launch(from, toward = null, opts = {}) {
     const F = CONFIG.night.flare, rng = this.rng;
     let ax = from.x, az = from.z;
-    if (toward) {
+    if (opts.at) { ax = opts.at.x; az = opts.at.z; }   // 7단계: 조명탄 사격 — 정해진 상공에서 터짐
+    else if (toward) {
       const dx = toward.x - from.x, dz = toward.z - from.z, dl = Math.hypot(dx, dz) || 1;
       const ahead = Math.min(dl, rng.range(30, 70));
       ax += dx / dl * ahead; az += dz / dl * ahead;
     } else { ax += rng.range(-20, 20); az += rng.range(-20, 20); }
     const gy = this.query ? this.query.getTerrainHeight(ax, az) : 0;
     const f = {
-      id: this._id++, from: { x: from.x, y: from.y ?? 0, z: from.z }, apex: { x: ax, y: gy + rng.range(F.height[0], F.height[1]), z: az },
+      id: this._id++, from: { x: from.x, y: from.y ?? 0, z: from.z }, apex: { x: ax, y: opts.at?.y ?? gy + rng.range(F.height[0], F.height[1]), z: az },
+      illum: !!opts.illum,
       x: from.x, y: from.y ?? 0, z: from.z, phase: 'rise', t: 0, burn: 0, life: opts.life ?? F.life,
       sway: rng.range(F.sway[0], F.sway[1]), period: rng.range(F.swayPeriod[0], F.swayPeriod[1]), ph: rng.range(0, Math.PI * 2),
       drift: { x: rng.range(-1, 1) * F.drift, z: rng.range(-1, 1) * F.drift }, flick: 1, squad: opts.squad ?? null, ground: gy,

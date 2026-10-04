@@ -321,8 +321,8 @@ export class Squad {
   }
 
   onDetect(soldier, surprised) {
-    // 6단계: 밤에 교전이 시작되면 조명탄
-    const tp = this.manager.target?.motor?.position;
+    // 6단계: 밤에 교전이 시작되면 조명탄 (7단계: 이 병사가 발견한 표적 쪽으로)
+    const tp = (soldier?.target ?? this.manager.player)?.motor?.position;
     if (tp && this.manager.night > 0.5) this.manager.requestFlare?.(this, tp);
     if (this.state === 'ambush') { this._checkAmbush(); return; }
     this.manager.shout(soldier, 'contact');
@@ -693,12 +693,14 @@ export class Squad {
   }
 
   _checkAmbush() {
-    const a = this.ambush, t = this.manager.target;
-    if (!a || a.sprung || !t || !t.alive) return;
-    const tp = t.motor.position;
+    const a = this.ambush;
+    if (!a || a.sprung) return;
     for (const m of this.members) {
       if (!m.alive) continue;
-      const d = dist(m, tp);
+      // 7단계: 병사마다 주목하는 표적 (플레이어 또는 아군 분대원)
+      const t = m.target;
+      if (!t || !t.alive) continue;
+      const d = dist(m, t.motor.position);
       // 가까이 왔고 (보고 있거나 거의 알아챘으면) → 동시에 사격
       if (m.perception.meter >= 1 && d <= a.trigger) { this.spring('close'); return; }
       if (m.perception.meter >= 0.5 && d <= a.trigger * 0.8) { this.spring('close'); return; }
@@ -714,7 +716,9 @@ export class Squad {
     a.sprung = true;
     a.sprungAt = now;
     a.reason = reason;
-    const t = this.manager.target;
+    // 7단계: 가장 잘 알아챈 병사가 주목하는 표적 (없으면 플레이어)
+    let t = this.manager.player, bm = -1;
+    for (const m of this.members) if (m.alive && m.target?.alive && m.perception.meter > bm) { bm = m.perception.meter; t = m.target; }
     if (est) {
       // 소리로 개시: 대략적인 위치로 (보이는 병사는 곧 정확히 겨눔)
       this.contact = { x: est.x, y: t ? t.motor.position.y : 0, z: est.z, time: now, uncertainty: (est.error ?? 2) * 1.5 + 1 };

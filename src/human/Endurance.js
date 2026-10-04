@@ -183,6 +183,9 @@ export class Endurance extends EventEmitter {
     return fx;
   }
 
+  /** 7단계: 보급 상자 물로 수통을 모두 가득 — 채운 양 (L) */
+  refillAll() { return this._fill(CONFIG.endurance.canteen.liters * this.canteens.length); }
+
   snapshot() {
     return { fatigue: this.fatigue, thirst: this.thirst, canteens: this.canteens.slice() };
   }

@@ -182,9 +182,12 @@ export class TrapField extends EventEmitter {
     if (person.injuries?.dead) return;
     // 같은 편 함정은 안다 (철선은 조심히 넘고, 지뢰·구덩이는 비켜 감 — 조향이 실패해 들어서도 밟지 않게 발을 옮김)
     const faction = person.faction ?? (person.isPlayer ? 'player' : 'neutral');
+    // 7단계: 아군 분대원은 알아챈 철선을 조심히 넘는다 (뛰고 있지 않으면)
+    const carefulAI = !person.isPlayer && faction === 'friend' && m.gait !== 'sprint';
     for (const t of this.list) {
       if (t.state !== 'armed') continue;
       if (t.faction === faction) continue;
+      if (carefulAI && t.known && t.kind === 'tripwire') continue;
       // 빠른 거르기
       const reach = t.kind === 'tripwire' ? t.len / 2 + 1 : t.r + 1;
       if (Math.abs(p.x - t.x) > reach + Math.abs(mx) || Math.abs(p.z - t.z) > reach + Math.abs(mz)) continue;
@@ -314,26 +317,37 @@ export class TrapField extends EventEmitter {
     return rate;
   }
 
-  /** 발견 한 번 (tick 초 분) — 알아챈 함정 목록 */
-  detectStep(dtStep, obs, env = {}) {
+  /** 발견 한 번 (tick 초 분) — 알아챈 함정 목록. 7단계: how 'ally' = 아군 첨병이 찾음 (by: 그 병사) */
+  detectStep(dtStep, obs, env = {}, how = 'sight', by = null) {
     const out = [];
     for (const t of this.list) {
       if (t.known || t.state !== 'armed') continue;
       const r = this.detectRate(t, obs, env);
       if (r <= 0) continue;
-      if (this.rng.chance(1 - Math.exp(-r * dtStep))) { this._know(t, 'sight'); out.push(t); }
+      if (this.rng.chance(1 - Math.exp(-r * dtStep))) { this._know(t, how, by); out.push(t); }
     }
     return out;
   }
 
-  _know(t, how) {
+  _know(t, how, by = null) {
     if (t.known) return;
     t.known = true;
     t.knownHow = how;
     t.knownAt = this.time;
     this.stats.known++;
+    if (how === 'ally') this.stats.byAlly = (this.stats.byAlly ?? 0) + 1;
     this._ver++;
-    this.emit('known', { trap: t, how });
+    this.emit('known', { trap: t, how, by });
+  }
+
+  /** 7단계: 알아챈 지뢰·구덩이 (아군이 비켜 갈 자리) [{x, z, r}] */
+  knownHazards() {
+    const out = [];
+    for (const t of this.list) {
+      if (!t.known || t.kind === 'tripwire') continue;
+      if (t.state === 'armed' || (t.kind === 'spikePit' && t.state === 'sprung')) out.push({ x: t.x, z: t.z, r: t.r, kind: t.kind, id: t.id });
+    }
+    return out;
   }
 
   /**

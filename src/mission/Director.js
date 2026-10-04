@@ -89,6 +89,13 @@ export class Director extends EventEmitter {
     }
     // 습격: 큰 교전 → 증원
     if (this.m.type === 'raid' && !this.bigFight && this.campSquads.length) this._checkBigFight(ctx);
+    // 7단계: 적 박격포 — 야영지가 아는 플레이어 쪽 위치 (마지막 접촉) 로
+    if (this.mortarAt != null && !this.mortarFired && this.t >= this.mortarAt) {
+      this.mortarFired = true;
+      const sq = this.mortarSquad;
+      const c = sq?.contact ?? sq?.threat ?? (ctx ? { x: ctx.pos.x, z: ctx.pos.z } : null);
+      if (c) this.emit('enemyMortar', { from: { x: this.m.enemies.mortar.x, z: this.m.enemies.mortar.z }, target: { x: c.x, z: c.z } });
+    }
     // 멀리서 들리는 총성 (첫 교전 전 자주, 뒤에는 드물게)
     this.nextDistant -= dt;
     if (this.nextDistant <= 0) {
@@ -342,9 +349,17 @@ export class Director extends EventEmitter {
     }
   }
 
-  _onDeath() { if (this.firstContact < 0) this.firstContact = this.t; }
+  _onDeath(e) {
+    if (e?.soldier?.faction === 'friend') return;   // 7단계: 아군 전사는 디렉터의 첫 접촉이 아님
+    if (this.firstContact < 0) this.firstContact = this.t;
+  }
   _onSquadState(e) {
     if ((e.state === 'engaged' || e.state === 'alert') && this.firstContact < 0) this.firstContact = this.t;
+    // 7단계: 야영지 분대가 교전을 시작하면 약 2분 뒤 적 박격포 (분대 모드 습격)
+    if (e.state === 'engaged' && this.m.enemies.mortar && this.mortarAt == null && this.campSquads.includes(e.squad)) {
+      this.mortarAt = this.t + rr(this.rng, CONFIG.support.enemyMortar.delay);
+      this.mortarSquad = e.squad;
+    }
   }
 
   // -----------------------------------------------------------------

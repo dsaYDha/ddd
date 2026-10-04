@@ -11,6 +11,9 @@
 //       85+ 웅크림 (가끔 뒤로 기어 후퇴), 엄폐 없이 제압당하면 바로 엎드려 가까운 엄폐로 기어감.
 //   · 부상 (3단계 그대로): 비명·도움 요청 (소음), 엄폐로 기어가 스스로 붕대·지혈대 (같은 규칙·수량),
 //       팔이 멀쩡하면 엎드린 채 계속 사격, 동료가 끌고 감 (0.6m/s, 둘 다 노출).
+//   · 7단계: 진영 (opts.faction 'enemy' 기본 | 'friend' — 아군 분대원은 ai/Ally 가 이어받음). 표적 = 지금 주목하는 추적의 표적
+//       (적: 플레이어·아군 분대원 중, 아군: 적 병사 중 — EnemyManager 가 고름). 다른 편이 낸 소리만 표적 정보.
+//       표적으로서의 노출도·빛은 exposure()/ambient() (EnemyManager 가 0.25초마다 계산). 업혀 가는 동안(carriedBy) 이동 컴포넌트는 멈춤.
 // =====================================================================
 import { CONFIG } from '../config.js';
 import { RNG } from '../core/rng.js';
@@ -24,6 +27,7 @@ const FLANK_WIDE_COS = Math.cos(45 * Math.PI / 180);
 const yawOf = (dx, dz) => Math.atan2(-dx, -dz);
 const rr = (rng, r) => rng.range(r[0], r[1]);
 const ARM_TYPES = new Set(['upperArm', 'forearm']);
+const CARRY_LIFT = 1.28;      // 7단계: 업힌 몸 (엎드린 자세) 을 어깨 높이로
 
 let nextSoldier = 1;
 
@@ -35,8 +39,9 @@ export class Soldier extends HumanEntity {
   constructor(manager, opts = {}) {
     const rng = opts.rng ?? new RNG((Math.random() * 4294967296) >>> 0);
     const id = nextSoldier++;
+    const faction = opts.faction ?? 'enemy';
     super(manager.query, manager.combat, {
-      ...opts, rng, arms: 'rifle', suppression: true, faction: 'enemy', name: opts.name ?? `적${id}`, data: { kind: 'soldier' },
+      ...opts, rng, arms: 'rifle', suppression: true, faction, name: opts.name ?? `${faction === 'friend' ? '아군' : '적'}${id}`, data: { kind: 'soldier' },
     });
     this.id = id;
     this.manager = manager;
@@ -112,7 +117,11 @@ export class Soldier extends HumanEntity {
   // =================================================================
   // 읽기
   // =================================================================
-  get target() { return this.manager.target; }
+  /** 지금 주목하는 표적 (적: 처음엔 플레이어) — { person, motor, alive } (플레이어 묘사 또는 다른 병사) */
+  get target() { return this.perception.focus.target ?? (this.faction === 'friend' ? null : this.manager.player); }
+  /** 7단계: 표적으로서의 노출도·빛 (EnemyManager._updateExposures) — 플레이어 묘사와 같은 꼴 */
+  exposure() { return this._expo ?? 0.5; }
+  ambient() { return this._amb ?? 1; }
   get now() { return this.manager.time; }
   get suppression() { return this.person.suppression.value; }
   get eye() { return this.person.eye ?? { x: this.motor.position.x, y: this.motor.position.y + this.motor.eyeHeight, z: this.motor.position.z }; }
@@ -138,6 +147,7 @@ export class Soldier extends HumanEntity {
   pose() {
     const P = super.pose();
     if (this.pitDepth > 0) P.y -= this.pitDepth;
+    if (this.carriedBy) P.y += CARRY_LIFT;   // 7단계: 업은 사람 어깨 위
     return P;
   }
 
@@ -311,12 +321,13 @@ export class Soldier extends HumanEntity {
     F.lead = rr(this.rng, CONFIG.ai.aim.leadAccuracy);
   }
 
-  /** 들은 소리 (EnemyManager 가 거리/음속 지연 뒤에 넘김) */
+  /** 들은 소리 (EnemyManager 가 거리/음속 지연 뒤에 넘김). 7단계: 다른 편이 낸 소리만 표적 정보 (srcFaction — 'none' 은 출처 없는 폭발) */
   onSound(evt) {
     const sq = this.squad;
     if (!sq || !this.alive) return;
     const pos = this.motor.position;
-    const fromTarget = this.target && evt.source === this.target.motor;
+    const fromTarget = evt.srcFaction !== undefined ? (evt.srcFaction !== this.faction && evt.srcFaction !== 'none')
+      : !!(this.target && evt.source === this.target.motor);
     if (evt.kind === 'gunshot') {
       if (fromTarget) {
         const crack = this.now - this.perception.lastCrack < CONFIG.ai.hearing.crackWindow;
@@ -330,11 +341,18 @@ export class Soldier extends HumanEntity {
       return;
     }
     if (evt.kind === 'shout') {
-      if (evt.squad !== sq) sq.onAlliedAlarm(this, evt);
+      if (fromTarget) {
+        // 7단계: 다른 편의 고함 (아군 분대장 명령·분대원 보고) — 거기 사람이 있다
+        const est = this.manager.estimate(evt, pos, this.rng, false);
+        if (!this.perception.seen) this._remember(est.x, evt.y, est.z, est.error * 1.5 + 3, 'heard');
+        sq.onHeardShot(this, est, evt);
+      } else if (evt.squad !== sq) sq.onAlliedAlarm(this, evt);
       return;
     }
-    // 6단계: 함정이 터짐 — 누군가 우리 함정에 걸렸다 (총성처럼 경계하고 그쪽을 확인)
+    // 6단계: 함정이 터짐 — 누군가 우리 함정에 걸렸다 (총성처럼 경계하고 그쪽을 확인) · 7단계: 포탄도
     if (evt.kind === 'explosion') {
+      // 7단계: 우리 편 포탄·헬기 소리는 위협이 아님
+      if (evt.srcFaction === this.faction || (evt.heli && this.faction === 'friend')) return;
       const est = this.manager.estimate(evt, pos, this.rng, false);
       if (!this.perception.seen) this._remember(est.x, evt.y, est.z, est.error * 1.5 + 4, 'heard');
       sq.onHeardShot(this, est, evt);
@@ -889,6 +907,7 @@ export class Soldier extends HumanEntity {
       case 'walk': stance = this.wantStance === 'prone' ? 'prone' : this.wantStance === 'crouch' ? 'crouch' : 'stand';
         intent = this.paceIntent ?? 1; break;
       case 'sneak': stance = this.wantStance === 'prone' ? 'prone' : 'crouch'; quiet = true; intent = 0.85; break;
+      case 'quiet': stance = this.wantStance === 'prone' ? 'prone' : this.wantStance === 'crouch' ? 'crouch' : 'stand'; quiet = true; intent = this.paceIntent ?? 1; break;   // 7단계: 서서 조용히 (첨병)
       case 'crawl': stance = 'prone'; break;
       default: break;
     }
@@ -944,7 +963,7 @@ export class Soldier extends HumanEntity {
 
   /** 막힘 풀기: 플레이어에게서 35m 밖이고 (90m 안이면) 시야 밖일 때만, 경유점 쪽 2.5m 안의 트인 칸으로 옮김 */
   _unstick(tx, tz) {
-    const p = this.motor.position, t = this.manager.target;
+    const p = this.motor.position, t = this.manager.player;
     if (t?.motor) {
       const tp = t.motor.position, d = Math.hypot(tp.x - p.x, tp.z - p.z);
       if (d < 35) return false;
@@ -973,8 +992,8 @@ export class Soldier extends HumanEntity {
       if (Math.abs(lat) > c.r + 0.42) return;
       if (t < bestT) { bestT = t; best = { c, lat }; }
     });
-    // 6단계: 자기 편 지뢰·구덩이 (자리를 안다) — 줄기처럼 비켜 감, 너무 가까우면 바로 멀어지는 쪽으로
-    const hz = this.manager.nav.hazards;
+    // 6단계: 자기 편 지뢰·구덩이 (자리를 안다) — 줄기처럼 비켜 감, 너무 가까우면 바로 멀어지는 쪽으로 (7단계 아군: 알아챈 함정만)
+    const hz = this._hazardList();
     if (hz && hz.length) {
       const SR = CONFIG.traps.avoid.steerRadius;
       for (const h of hz) {
@@ -1000,6 +1019,9 @@ export class Soldier extends HumanEntity {
     const l = Math.hypot(x, z) || 1;
     return { x: x / l, z: z / l };
   }
+
+  /** 비켜 갈 함정 자리 [{x, z, r}] — 적은 자기 편 지뢰·구덩이 전부 */
+  _hazardList() { return this.manager.nav.hazards; }
 
   _stance(st) {
     const m = this.motor;

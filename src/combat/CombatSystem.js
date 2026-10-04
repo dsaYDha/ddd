@@ -90,8 +90,8 @@ export class CombatSystem extends EventEmitter {
    * @returns {{ fragments: number, point }}
    */
   explode(point, opts = {}) {
-    const T = CONFIG.traps, B = T.blast;
-    if (this.noise) this.noise.emitNoise(point, B.noise, 'explosion', opts.source ?? null, { blastKind: opts.kind ?? 'explosion', trap: opts.trap ?? null });
+    const T = CONFIG.traps, B = opts.blast ? { ...T.blast, ...opts.blast } : T.blast;   // 7단계: 포탄은 거리표·소음이 다름
+    if (this.noise) this.noise.emitNoise(point, B.noise, 'explosion', opts.source ?? null, { blastKind: opts.kind ?? 'explosion', trap: opts.trap ?? null, faction: opts.faction ?? null });
     // 거리별 제압 (몸 중심까지 거리)
     const list = this.people.list;
     for (let i = 0; i < list.length; i++) {
@@ -108,7 +108,7 @@ export class CombatSystem extends EventEmitter {
     const w = CONFIG.weapons.fragment;
     const sp = opts.speed ?? [600, 1000], el = opts.elev ?? [-5, 40];
     const s0 = Math.sin(el[0] * Math.PI / 180), s1 = Math.sin(el[1] * Math.PI / 180);
-    const shooter = { name: '파편', isTrap: true, position: { x: point.x, y: point.y, z: point.z }, trap: opts.trap ?? null };
+    const shooter = opts.shooter ?? { name: '파편', isTrap: true, position: { x: point.x, y: point.y, z: point.z }, trap: opts.trap ?? null };
     const origin = { x: point.x, y: point.y, z: point.z };
     for (let i = 0; i < n; i++) {
       const az = this.rng.range(0, Math.PI * 2);

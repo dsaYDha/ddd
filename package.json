@@ -2,7 +2,7 @@
   "name": "jungle-fps",
   "private": true,
   "version": "0.1.0",
-  "description": "동남아 정글 사실주의 전쟁 FPS — 6단계: 부비트랩·밤 전투·몸과 피로",
+  "description": "동남아 정글 사실주의 전쟁 FPS — 7단계: 아군 분대·명령·지원 화력·보급",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,7 +15,8 @@
     "mission": "node scripts/mission-check.mjs",
     "field": "node scripts/field-check.mjs",
     "map": "node scripts/render-map.mjs map.png 2",
-    "build:single": "vite build && node scripts/build-single.mjs"
+    "build:single": "vite build && node scripts/build-single.mjs",
+    "squad": "node scripts/squad-check.mjs"
   },
   "dependencies": {
     "three": "^0.186.1"

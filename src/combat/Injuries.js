@@ -402,6 +402,33 @@ export class Injuries extends EventEmitter {
     return { ok: true, duration };
   }
 
+  /**
+   * 7단계: 다른 사람이 처치 (의무병·플레이어가 아군을, 의무병이 플레이어를) — 물자는 처치하는 쪽 것.
+   * 처치할 상처 (없으면 null): 지혈대는 동맥 출혈 팔다리 우선, 붕대는 가장 피를 많이 흘리는 상처.
+   */
+  treatmentTarget(kind) {
+    if (this.dead) return null;
+    return this.aidTarget(kind);
+  }
+
+  /** 7단계: 처치 결과 적용 (시간은 처치하는 쪽이 셈) */
+  applyTreatment(kind, w) {
+    if (!w || this.dead || !this.wounds.includes(w)) return false;
+    if (kind === 'bandage') w.bandaged = true; else w.tourniquet = true;
+    this._ver++;
+    this.emit('treated', { kind, wound: w });
+    return true;
+  }
+
+  /** 7단계: 붕대·지혈대로 처치할 만한 출혈이 있나 (처치하는 쪽이 고를 종류) */
+  treatmentKind(hasTourniquet = true) {
+    if (this.dead) return null;
+    const art = this.wounds.some((w) => w.arterial && !w.tourniquet && LIMB_TYPES.has(PART_TYPE[w.part]));
+    if (art && hasTourniquet && this.aidTarget('tourniquet')) return 'tourniquet';
+    // 붕대를 감은 팔다리 상처(동맥 아님)에 지혈대까지 감지는 않음 — 남의 물자를 아낌
+    return this.aidTarget('bandage') ? 'bandage' : null;
+  }
+
   cancelAid(reason = 'cancel') {
     const a = this.aid;
     if (!a) return;

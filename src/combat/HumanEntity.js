@@ -144,6 +144,12 @@ export class HumanEntity extends EventEmitter {
       m.update(dt);
       return;
     }
+    // 7단계: 업혀 가는 동안 — 이동 컴포넌트는 멈춤 (위치는 업은 사람이 정함), 부상·출혈만
+    if (this.carriedBy) {
+      this._stopInput();
+      this._afterMotor(dt);
+      return;
+    }
     if (inj.alive) this._control(dt);
     m.update(dt);
     this._afterMotor(dt);

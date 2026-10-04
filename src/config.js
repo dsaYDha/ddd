@@ -540,6 +540,27 @@ export const CONFIG = {
       bipodSuppressionMul: 1.3,     // 양각대 거치 사격이면 추가 배율 → '거치 사격 시 강한 제압'
       sound: { rate: 0.9, boom: 1.45, lpMul: 0.9, crack: 1.2 },
     },
+    // 7단계: 아군 기관총수의 경기관총 — 플레이어 쪽 총성 계열 (적이 들으면 적 총성), 탄띠 100발
+    lmg762f: {
+      label: '7.62mm 경기관총 (아군)',
+      caliber: '7.62x51', family: 'player', pickup: false,
+      weightKg: 10.5, magCapacity: 100, magsCarried: 3, magEmptyKg: 0.2, roundKg: 0.025,
+      rpm: 550, modes: ['auto'],
+      muzzleVelocity: 850, dragK: 0.0012, zeroRange: 200, sightHeight: 0.07, sightRadius: 0.62,
+      dispersionMOA: 6, tracer: true, tracerEvery: 5,
+      recoil: {
+        vertical: 1.5, verticalJitter: 0.35, horizontal: 0.9, autoRecover: 0.45, kickTime: 0.05, recoverDelay: 0.08, recoverTime: 0.25,
+        burstGrowth: [1.0, 1.1, 1.2, 1.3, 1.4], burstGap: 0.3, kickBackM: 0.05, kickUpDeg: 3,
+      },
+      reload: {
+        tactical: 7, empty: 8, magCheck: 2, clear: 2.5,
+        tacticalTimeline: { magOut: 0.2, magIn: 0.65 }, emptyTimeline: { magOut: 0.15, magIn: 0.55, boltPull: 0.8, boltRelease: 0.88 },
+        clearTimeline: { boltPull: 0.42, boltRelease: 0.58 },
+      },
+      malfunction: { perShot: 0.0008, foulingMaxMul: 20 },
+      bipod: true, suppressionMul: 1.35, bipodSuppressionMul: 1.3,
+      sound: { rate: 0.94, boom: 1.35, lpMul: 0.95, crack: 1.15 },
+    },
     // 6단계: 함정 파편 (총이 아님 — CombatSystem.explode 가 쏨). 큰 공기 저항으로 30m 안에서 힘을 잃는다.
     //  맞으면 3단계 '저속 탄' 규칙 (traps.fragment.retained < injury.lowSpeedRatio): 치명 부위 → 가슴 중상, 나머지 → 스침
     fragment: {
@@ -1021,6 +1042,76 @@ export const CONFIG = {
   //  아래를 볼수록 고개를 숙여 눈이 neckForward m 더 앞으로 (군화 끝이 탄띠 너머로 보임)
   body: { offsetBack: 0.2, offsetBackCrouch: 0.02, offsetBackProne: 0.05, neckForward: 0.14, hideAbovePitch: 25 },   // hideAbovePitch: 이보다 위를 보면 몸을 그리지 않음 (°)
 
+  // ==================================================================
+  //  7단계: 아군 분대 — 플레이어 = 분대장. 분대원은 1~6단계 '사람 개체' + 4단계 AI 두뇌 (ai/Ally — 이동·사격·제압·부상·
+  //   피로·갈증·밤 시야·함정 규칙을 적과 똑같이 받음). 피아 표시 없음 — 오인 사격은 실제로 일어날 수 있다.
+  // ==================================================================
+  allies: {
+    size: 4,                          // 분대원 수 (3~5) — 역할은 roles 앞에서부터
+    roles: ['point', 'radio', 'mg', 'medic', 'rifleman'],
+    roleLabels: { point: '첨병', mg: '기관총수', radio: '무전병', medic: '의무병', rifleman: '소총수' },
+    weapon: 'rifle762', mgWeapon: 'lmg762f',     // 소총은 플레이어와 같은 계열 (탄 호환)
+    maxActive: 5,
+    // 대형 (플레이어 기준): 첨병은 pointAhead m 앞 (오솔길이면 길을 따라), 나머지는 뒤로 spacing 간격
+    spacing: [5, 10], pointAhead: 11,
+    formation: { fileGap: 6.5, wedgeBack: 6, wedgeSide: 6, spreadSide: 9 },
+    catchUp: { walk: 4, run: 13 },    // 자리에서 이만큼 멀면 걸어서 / 뛰어서 따라옴 (m)
+    // 명령: 받고 실행하기까지 (s) · 제압 pinned(60) 이상이면 이동 명령을 못 따름 (45 아래로 내려가야)
+    orderDelay: [0.5, 2],
+    // 수신호: range m 안 (밤엔 빛 수준만큼 — 최소 nightMin 배), 시야가 트여야 (투과율 losMin), 나를 보고 있거나 glance 확률로 돌아봄
+    signal: { range: 30, nightMin: 0.22, glance: 0.65, fovDeg: 200, losMin: 0.12, hold: 1.2 },
+    shout: { radius: 60 },            // 명령 외치기 — 소음 반경 (적도 들음)
+    suppressTime: 15,                 // '제압 사격' 명령 지속 (s)
+    retreatDistance: 45,              // '후퇴' — 지정 방향으로 이만큼
+    contactHold: 25,                  // 마지막 접촉 뒤 이만큼 지나면 평시로 (s)
+    // 적 발견 보고: '적! 2시 방향, 50미터!' — 분대 진행 방향 기준 시계 방향 (dirError 확률로 한 시간 틀림), 거리 ±distError
+    report: { gap: 3, perTargetGap: 14, dirError: 0.3, distError: 0.18 },
+    trapHalt: 7,                      // 첨병이 함정을 찾으면 분대가 멈추는 시간 (s)
+    pointDetect: { tick: 0.25, lookPitch: -0.45 },   // 첨병 함정 찾기 (6단계 발견 규칙 — 조용히 걸으며 땅을 봄)
+    medic: { bandages: 8, tourniquets: 4, speedMul: 1.5, maxSuppression: 60, range: 1.5 },   // 처치는 플레이어보다 1.5배 빠름
+    carry: { speed: 1.0, pickTime: 2, dropSuppression: 30 },   // 걷지 못하는 부상자 업기
+    giveAmmo: { minMags: 3, throwRange: 9, flight: 0.8 },      // '탄약 줘': 탄창 3개 이상 남은 가장 가까운 분대원이 1개 던짐
+    lootTime: 3,                      // 쓰러진 아군 물자 회수 (F)
+    looseRounds: 60,                  // 분대원 낱발 (기관총수 제외 — 쓰러지면 회수)
+    treatRange: 1.6,                  // 플레이어가 아군을 처치 (F — 내 붕대·지혈대)
+    radioKg: 9,                       // 무전기 무게 (주워 들면 장비 무게에 더함)
+    enemyScale: 1.3,                  // 분대 모드에서 디렉터의 적 규모 배율
+    names: {
+      family: ['김', '이', '박', '최', '정', '강', '조', '윤', '장', '임', '한', '오', '서', '신', '권', '황', '안', '송', '류', '홍', '전', '고', '문', '배'],
+      given: ['민', '준', '서', '현', '우', '진', '도', '영', '성', '재', '호', '수', '지', '태', '경', '상', '동', '훈', '석', '철', '용', '기', '원', '규', '혁', '찬', '범', '윤'],
+    },
+  },
+
+  // 7단계: 무전 지원 화력 — 무전병이 살아서 radioRange m 안에 있거나 무전기를 직접 들고 있어야 요청 (M 지도에서 지점 → 종류)
+  //  정확도: 지도에서 고른 지점 기준 (내 위치를 잘못 알면 엉뚱한 곳) — 시험 사격 spotError → 수정하면 adjustError → 효력 사격 spread 안에 흩어짐
+  support: {
+    radioRange: 10,
+    radioLag: [10, 20],               // 무전 응답까지 (s)
+    unavailable: 0.15,                // '지금 불가'
+    dangerClose: 150,                 // 지정 지점이 아군(실제 위치)에서 이 안이면 '위험 근접' → 한 번 더 확인해야 사격
+    confirmWindow: 60,                // 위험 근접 확인을 기다리는 시간 (s)
+    spotError: [30, 100], adjustError: [15, 30], spread: 25,
+    adjustWait: 150,                  // 시험 사격 뒤 수정 지점을 기다리는 시간 (s) — 지나면 임무 끝
+    whistle: [1, 2],                  // 날아오는 소리 (탄착 전 s)
+    // 종류별: 횟수(임무당)·도착(s)·효력 사격 발 수·발 간격·파편·소음·제압 거리표 ([거리 m, 증가] — Suppression.add)
+    mortar: { count: 2, arrive: [60, 90], rounds: 6, interval: [0.9, 1.6], fragments: 170, speed: [500, 1000], noise: 1400,
+      suppression: [[3, 100], [8, 85], [15, 60], [25, 35], [40, 15], [55, 4]] },
+    artillery: { count: 1, arrive: [120, 240], rounds: 12, interval: [0.6, 1.4], fragments: 280, speed: [550, 1100], noise: 2500,
+      suppression: [[4, 100], [12, 90], [22, 65], [35, 40], [55, 18], [80, 5]] },
+    // 조명탄 사격 (밤): 지정 지점 위에 3발 — 조명탄은 6단계 Flares (높이·수명만 다름)
+    illum: { count: 2, rounds: 3, arrive: [40, 60], interval: [4, 7], height: [180, 230], error: [25, 60], life: 50 },
+    // 수관 폭발: 캐노피 덮임 ≥ minCanopy 이면 확률 (덮임^exp × chanceMul) 로 나무 높이에서 터져 파편이 위에서 아래로
+    airburst: { minCanopy: 0.35, chanceMul: 0.9, exp: 1.4, height: [14, 24], elev: [-88, -12] },
+    crater: { radius: [1.1, 1.8], max: 48 },
+    // 적 박격포 (야영지 습격): 교전 시작 delay 초 뒤, 플레이어 쪽으로 부정확하게 (적이 아는 위치 ± error)
+    enemyMortar: { delay: [100, 140], rounds: [4, 6], interval: [5, 9], error: [20, 60], flight: [12, 20], fragments: 150 },
+  },
+  // 7단계: 보급 — 헬기 보급 투하 (무전, 임무당 1회, 개활지만) · 상자 (F)
+  supply: {
+    heli: { count: 1, arrive: [180, 300], noise: 700, attract: 350, dropError: [4, 14], maxCanopy: 0.4 },
+    crate: { mags: 4, loose: 120, bandages: 4, tourniquets: 2, water: true, openTime: 3 },
+  },
+
   // 4단계: 동물 정적 — 움직이는 사람 주변·총성 뒤 새·벌레 소리가 잦아든다 (그 자체가 단서)
   wildlife: {
     cell: 8,
@@ -1138,6 +1229,8 @@ export const CONFIG = {
     // 6단계: 탐침 (누르고 있기), 손전등, 수통 마시기 (누르고 있기), 디버그 시험 메뉴 (함정·시각·달·피로·갈증)
     //  F 상호작용 = 인계철선 해제 (5초) · 개울에서 앉아 수통 채우기 (10초) 추가
     probe: 'KeyY', flashlight: 'KeyL', drink: 'KeyU', fieldDebug: 'F10',
+    // 7단계: 명령 휠 (누르고 있기 — 좌클릭 수신호 / 우클릭 외치기) · 디버그 모드 전용: 분대 다시 생성 · 지원 화력 횟수 초기화 · 탄약 처음 상태로
+    orders: 'KeyJ', allyRespawn: 'KeyO', supportReset: 'KeyI', ammoRefill: 'KeyP',
   },
 
   // 사용자 설정 기본값 (Esc 메뉴, localStorage 저장)
@@ -1153,6 +1246,7 @@ export const CONFIG = {
     volRadio: 1.0,          //        무전
     debugMode: false,       // 5단계: 켜야 F2~F9 디버그·테스트 키가 동작
     checkpoint: false,      // 5단계: 체크포인트 1회 (중간 목표에서 한 번 저장)
+    squadMode: true,        // 7단계: 분대 모드 (끄면 단독 모드 — 5·6단계처럼 혼자)
   },
 };
 
